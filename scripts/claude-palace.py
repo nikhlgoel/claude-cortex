@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+"""
+Claude Cortex - Cognitive Memory Palace Engine v2.5
+Neuroscience-inspired cognitive architecture with inverted label indexing,
+autonomous recall, room filtering, cooperative file-locking concurrency,
+deduplication guards, and recency-weighted recall.
+"""
+
+import os
+import sys
+import json
+import re
+import argparse
+import hashlib
+import contextlib
+from datetime import datetime, timezone
+
+ROOMS = {
+    "blueprint": {
+        "name": "The Blueprint Room",
+        "file": "blueprint.md",
+        "desc": "Semantic memory: system architecture, data models, contracts, tech stack.",
+        "icon": "🏛️"
+    },
+    "procedures": {
+        "name": "The Workshop",
+        "file": "procedures.md",
+        "desc": "Procedural memory: build recipes, verified workflows, test commands.",
+        "icon": "⚙️"
+    },
+    "graveyard": {
+        "name": "The Graveyard & Trophy Hall",
+        "file": "graveyard.md",
+        "desc": "Episodic memory: hard-won bugfixes, edge cases, traps, anti-patterns.",
+        "icon": "🛡️"
+    },
+    "decisions": {
+        "name": "The Council Chamber",
+        "file": "decisions.md",
+        "desc": "Architectural Decision Records (ADRs), trade-offs, design rationale.",
+        "icon": "⚖️"
+    },
+    "working": {
+        "name": "The Study",
+        "file": "working.md",
+        "desc": "Working memory: current sprint/session goals, immediate focus, next steps.",
+        "icon": "📝"
+    }
+}
+
+STOPWORDS = {
+    "the", "and", "a", "an", "in", "on", "of", "to", "for", "with", "is", "at",
+    "by", "this", "that", "it", "from", "as", "are", "be", "was", "or", "we", "i"
+}
+
+_LOCK_DEPTH = 0
+_LOCK_FD = None
+
+@contextlib.contextmanager
+def palace_lock(palace_dir):
+    """Cooperative re-entrant cross-process file lock for memory palace writes."""
+    global _LOCK_DEPTH, _LOCK_FD
+    os.makedirs(palace_dir, exist_ok=True)
+    lock_file = os.path.join(palace_dir, ".palace.lock")
+
+    if _LOCK_DEPTH > 0:
+        _LOCK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _LOCK_DEPTH -= 1
+        return
+
+    fd = open(lock_file, "a")
+    try:
+        import fcntl
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX)
+    except (ImportError, AttributeError, OSError):
+        pass
+
+    _LOCK_FD = fd
+    _LOCK_DEPTH = 1
+    try:
+        yield
+    finally:
+        _LOCK_DEPTH = 0
+        try:
+            import fcntl
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            fd.close()
+        except Exception:
+            pass
+        _LOCK_FD = None
+
+def find_palace_dir():
+    cwd = os.getcwd()
+    try:
+        import subprocess
+        git_root = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], stderr=subprocess.DEVNULL).decode().strip()
+        if git_root:
+            local_palace = os.path.join(git_root, ".claude", "palace")
+            if os.path.exists(local_palace):
+                return local_palace
+    except Exception:
+        pass
+
+    clean_cwd = cwd.replace("/", "-").strip("-")
+    project_palace = os.path.expanduser(f"~/.claude/projects/{clean_cwd}/palace")
+    if os.path.exists(project_palace):
+        return project_palace
+
+    return os.path.expanduser("~/.claude/palace")
+
+def load_index(palace_dir):
+    index_file = os.path.join(palace_dir, "index.json")
+    idx = {
+        "palace_version": "2.5",
+        "initialized_at": datetime.now(timezone.utc).isoformat(),
+        "last_consolidated": datetime.now(timezone.utc).isoformat(),
+        "stats": {"total_memories": 0, "total_tags": 0},
+        "tag_index": {},
+        "memories": {},
+        "rooms": {}
+    }
+    if os.path.exists(index_file):
+        try:
+            with open(index_file) as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    idx.update(loaded)
+                    idx.setdefault("stats", {"total_memories": 0, "total_tags": 0})
+                    idx.setdefault("tag_index", {})
+                    idx.setdefault("memories", {})
+                    idx.setdefault("rooms", {})
+        except Exception:
+            pass
+    return idx
+
+def save_index(palace_dir, idx):
+    with palace_lock(palace_dir):
+        index_file = os.path.join(palace_dir, "index.json")
+        idx["last_consolidated"] = datetime.now(timezone.utc).isoformat()
+        idx["stats"]["total_memories"] = len(idx.get("memories", {}))
+        idx["stats"]["total_tags"] = len(idx.get("tag_index", {}))
+        tmp_file = f"{index_file}.tmp.{os.getpid()}"
+        with open(tmp_file, "w") as f:
+            json.dump(idx, f, indent=2)
+        os.replace(tmp_file, index_file)
+
+def ensure_palace_structure(palace_dir):
+    rooms_dir = os.path.join(palace_dir, "rooms")
+    os.makedirs(rooms_dir, exist_ok=True)
+    idx = load_index(palace_dir)
+
+    for rkey, rinfo in ROOMS.items():
+        rpath = os.path.join(rooms_dir, rinfo["file"])
+        if not os.path.exists(rpath):
+            header = f"# {rinfo['icon']} {rinfo['name']}\n\n> {rinfo['desc']}\n\n---\n"
+            with open(rpath, "w") as f:
+                f.write(header)
+
+        if rkey not in idx["rooms"]:
+            idx["rooms"][rkey] = {
+                "name": rinfo["name"],
+                "file": f"rooms/{rinfo['file']}",
+                "entries_count": 0,
+                "tags": [],
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            }
+
+    save_index(palace_dir, idx)
+    return palace_dir
+
+def tokenize(text):
+    words = re.findall(r'[a-zA-Z0-9_\-]+', text.lower())
+    cleaned = []
+    for w in words:
+        w = w.strip("-_.")
+        if len(w) > 2 and w not in STOPWORDS:
+            cleaned.append(w)
+    return cleaned
+
+def resolve_room(room_query):
+    if not room_query:
+        return None
+    rq = room_query.lower()
+    for k in ROOMS:
+        if rq in k or k in rq:
+            return k
+    return None
+
+def remember(palace_dir, room_key, title, content, tags=None):
+    ensure_palace_structure(palace_dir)
+
+    with palace_lock(palace_dir):
+        idx = load_index(palace_dir)
+
+        # Match room
+        resolved = resolve_room(room_key)
+        if not resolved:
+            resolved = "graveyard" if "bug" in title.lower() or "fix" in title.lower() else "blueprint"
+        room_key = resolved
+
+        rinfo = ROOMS[room_key]
+        rpath = os.path.join(palace_dir, "rooms", rinfo["file"])
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        # Deduplication Guard: Check if identical or near-identical memory exists in this room
+        title_clean = title.strip().lower()
+        first_line_clean = content.strip().splitlines()[0][:100].lower()
+        for mid, mdata in idx.get("memories", {}).items():
+            if mdata.get("room") == room_key:
+                exist_title = mdata.get("title", "").strip().lower()
+                exist_summary = mdata.get("summary", "").strip().lower()
+                if exist_title == title_clean or (len(title_clean) > 8 and title_clean in exist_title):
+                    print(f"ℹ Memory already recorded in {rinfo['icon']} {rinfo['name']} as [{mid}]: '{title}'. Skipped duplicate.")
+                    return mid
+
+        # Generate deterministic short ID
+        h = hashlib.sha256(f"{room_key}:{title}:{datetime.now().timestamp()}".encode()).hexdigest()[:6]
+        mem_id = f"{room_key[:4]}_{h}"
+
+        # Auto-extract tags if not passed
+        extracted_tags = set(tags or [])
+        for word in tokenize(title + " " + content):
+            if len(word) > 2 and word not in STOPWORDS:
+                extracted_tags.add(word)
+
+        clean_tags = []
+        for t in extracted_tags:
+            ct = t.strip("#.,!?:;\"'()[]{} \t\n\r").lower()
+            if len(ct) > 2 and ct not in STOPWORDS:
+                clean_tags.append(ct)
+        final_tags = sorted(list(set(clean_tags)))[:10]
+
+        # Markdown format
+        tag_header = " ".join(f"#{t}" for t in final_tags)
+        entry = f"\n### [{now_str}] {title} <!-- id:{mem_id} -->\n"
+        entry += f"**Tags:** `{tag_header}`\n\n"
+        entry += f"{content.strip()}\n"
+
+        with open(rpath, "a") as f:
+            f.write(entry)
+
+        # Update index
+        idx.setdefault("memories", {})[mem_id] = {
+            "id": mem_id,
+            "room": room_key,
+            "title": title,
+            "tags": final_tags,
+            "summary": content.strip().split("\n")[0][:150],
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        # Update inverted tag_index
+        for t in final_tags:
+            idx.setdefault("tag_index", {}).setdefault(t, [])
+            if mem_id not in idx["tag_index"][t]:
+                idx["tag_index"][t].append(mem_id)
+
+        rmeta = idx["rooms"].setdefault(room_key, {})
+        rmeta["entries_count"] = rmeta.get("entries_count", 0) + 1
+        rmeta["last_updated"] = datetime.now(timezone.utc).isoformat()
+        existing_tags = set(rmeta.get("tags", []))
+        existing_tags.update(final_tags)
+        rmeta["tags"] = sorted(list(existing_tags))
+
+        save_index(palace_dir, idx)
+        print(f"✓ Deposited memory [{mem_id}] into {rinfo['icon']} {rinfo['name']}: '{title}'")
+        return mem_id
+
+def recall(palace_dir, query, room=None, auto_mode=False, max_results=3):
+    ensure_palace_structure(palace_dir)
+    idx = load_index(palace_dir)
+
+    terms = tokenize(query)
+    if not terms:
+        if not auto_mode:
+            print("Please provide search keywords.")
+        return []
+
+    target_room = resolve_room(room) if room else None
+
+    # Filter candidate memories by room if specified
+    candidates = idx.get("memories", {})
+    if target_room:
+        candidates = {mid: m for mid, m in candidates.items() if m.get("room") == target_room}
+
+    if not candidates:
+        if not auto_mode:
+            rname = ROOMS.get(target_room, {}).get("name", target_room or "all rooms")
+            print(f"No memories found matching in {rname}.")
+        return []
+
+    # Score memories using inverted tag index, title terms, and recency weighting
+    scores = {}
+    for mid, mdata in candidates.items():
+        m_tags = mdata.get("tags", [])
+        title_terms = tokenize(mdata.get("title", ""))
+        summary_terms = tokenize(mdata.get("summary", ""))
+
+        score = 0.0
+        for term in terms:
+            for tag in m_tags:
+                if term == tag:
+                    score += 4.0
+                elif term in tag or tag in term:
+                    score += 2.0
+            if term in title_terms:
+                score += 3.0
+            if term in summary_terms:
+                score += 1.0
+
+        if score > 0:
+            # Recency bonus: recent memories receive a gentle priority boost
+            created_str = mdata.get("created_at")
+            if created_str:
+                try:
+                    dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                    age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+                    if age_days < 3:
+                        score += 2.0
+                    elif age_days < 14:
+                        score += 1.0
+                    elif age_days < 30:
+                        score += 0.5
+                except Exception:
+                    pass
+            scores[mid] = score
+
+    sorted_mids = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    top_mids = [m[0] for m in sorted_mids[:max_results]]
+
+    if not top_mids:
+        if not auto_mode:
+            rdesc = f" in {ROOMS[target_room]['name']}" if target_room else ""
+            print(f"No specific memories found matching '{query}'{rdesc}.")
+        return []
+
+    # Fetch contents
+    results = []
+    for mid in top_mids:
+        mdata = idx.get("memories", {}).get(mid)
+        if not mdata:
+            continue
+        room_key = mdata.get("room")
+        rinfo = ROOMS.get(room_key, {})
+        rpath = os.path.join(palace_dir, "rooms", rinfo.get("file", ""))
+        full_text = ""
+        if os.path.exists(rpath):
+            with open(rpath) as f:
+                content = f.read()
+            pattern = re.compile(rf'(### .*?<!-- id:{mid} -->.*?)(?=\n### |\Z)', re.DOTALL)
+            m = pattern.search(content)
+            if m:
+                full_text = m.group(1).strip()
+            else:
+                full_text = f"### {mdata.get('title')}\n{mdata.get('summary')}"
+        results.append({
+            "id": mid,
+            "room": rinfo.get("name", room_key),
+            "icon": rinfo.get("icon", "📝"),
+            "title": mdata.get("title"),
+            "tags": mdata.get("tags", []),
+            "content": full_text
+        })
+
+    if auto_mode:
+        for r in results:
+            print(f"{r['icon']} [{r['room'].upper()}] {r['title']} (tags: {', '.join(r['tags'])})")
+            print(r['content'])
+            print("---")
+    else:
+        print("======================================================================")
+        room_suffix = f" in {ROOMS[target_room]['name']}" if target_room else ""
+        print(f"      🏰 Palace Recall: Found {len(results)} relevant memories{room_suffix}")
+        print("======================================================================")
+        for r in results:
+            print(f"{r['icon']} [{r['room'].upper()}] {r['title']}")
+            print(r['content'])
+            print("-" * 70)
+
+    return results
+
+def prune(palace_dir, mem_id=None, tag=None):
+    ensure_palace_structure(palace_dir)
+
+    with palace_lock(palace_dir):
+        idx = load_index(palace_dir)
+        removed = 0
+        if mem_id:
+            if mem_id in idx.get("memories", {}):
+                mdata = idx["memories"].pop(mem_id)
+                # Remove from tag_index
+                for t in mdata.get("tags", []):
+                    if t in idx.get("tag_index", {}):
+                        idx["tag_index"][t] = [x for x in idx["tag_index"][t] if x != mem_id]
+                        if not idx["tag_index"][t]:
+                            del idx["tag_index"][t]
+                # Remove from markdown file
+                room_key = mdata.get("room")
+                rinfo = ROOMS.get(room_key, {})
+                rpath = os.path.join(palace_dir, "rooms", rinfo.get("file", ""))
+                if os.path.exists(rpath):
+                    with open(rpath) as f:
+                        content = f.read()
+                    pattern = re.compile(rf'\n### .*?<!-- id:{mem_id} -->.*?(?=\n### |\Z)', re.DOTALL)
+                    clean_content = pattern.sub('', content)
+                    with open(rpath, "w") as f:
+                        f.write(clean_content)
+                removed += 1
+                print(f"✓ Pruned memory [{mem_id}] ({mdata.get('title')})")
+
+        save_index(palace_dir, idx)
+        if removed == 0 and mem_id:
+            print(f"Memory ID '{mem_id}' not found.")
+
+def show_status(palace_dir):
+    ensure_palace_structure(palace_dir)
+    idx = load_index(palace_dir)
+
+    print("======================================================================")
+    print("                    🏰 Claude Code Memory Palace v2.5")
+    print("======================================================================")
+    print(f"Location:           {palace_dir}")
+    print(f"Total Memories:     {idx['stats'].get('total_memories', 0)}")
+    print(f"Indexed Tags:       {idx['stats'].get('total_tags', 0)}")
+    print(f"Last Consolidated:  {idx.get('last_consolidated', 'N/A')[:19]}")
+    print("")
+    print("Cognitive Rooms:")
+    for rkey, rinfo in ROOMS.items():
+        rmeta = idx["rooms"].get(rkey, {})
+        rpath = os.path.join(palace_dir, "rooms", rinfo["file"])
+        line_count = 0
+        if os.path.exists(rpath):
+            with open(rpath) as f:
+                line_count = len(f.readlines())
+        tags_str = ", ".join(rmeta.get("tags", [])[:6])
+        if len(rmeta.get("tags", [])) > 6:
+            tags_str += f" (+{len(rmeta.get('tags')) - 6} more)"
+        print(f"  {rinfo['icon']} {rinfo['name'].upper():<28} [{line_count} lines, {rmeta.get('entries_count', 0)} memories]")
+        print(f"     Tags:    {tags_str or 'None'}")
+        print(f"     Purpose: {rinfo['desc']}")
+    print("======================================================================")
+
+def main():
+    parser = argparse.ArgumentParser(description="Cognitive Memory Palace Engine v2.5")
+    parser.add_argument("action", nargs="?", default="status", choices=["status", "init", "remember", "recall", "search", "auto-recall", "prune", "consolidate"])
+    parser.add_argument("--room", "-r", help="Target room (blueprint, procedures, graveyard, decisions, working)")
+    parser.add_argument("--title", "-t", help="Memory entry title")
+    parser.add_argument("--content", "-c", help="Memory body content")
+    parser.add_argument("--tags", nargs="*", help="Tags for inverted indexing")
+    parser.add_argument("--query", "-q", help="Search query")
+    parser.add_argument("--id", help="Memory ID to prune")
+    parser.add_argument("--path", help="Custom palace directory")
+    args, unknown = parser.parse_known_args()
+
+    palace_dir = args.path or find_palace_dir()
+
+    if args.action == "init":
+        ensure_palace_structure(palace_dir)
+        print(f"✓ Memory Palace initialized at: {palace_dir}")
+    elif args.action == "status":
+        show_status(palace_dir)
+    elif args.action == "remember":
+        room = args.room
+        title = args.title
+        content = args.content
+        if not room and unknown:
+            room = unknown[0]
+            if len(unknown) == 2:
+                content = unknown[1]
+                if not title:
+                    title = content.splitlines()[0][:60]
+            elif len(unknown) > 2:
+                if not title:
+                    title = unknown[1]
+                if not content:
+                    content = " ".join(unknown[2:])
+        elif room and not content and unknown:
+            if len(unknown) == 1:
+                content = unknown[0]
+                if not title:
+                    title = content.splitlines()[0][:60]
+            elif len(unknown) >= 2:
+                if not title:
+                    title = unknown[0]
+                content = " ".join(unknown[1:])
+
+        if not room or not content:
+            print("Usage: claude-palace remember <room> <notes> OR claude-palace remember --room <room> --title <title> --content <content> [--tags <tags>]")
+            sys.exit(1)
+        if not title:
+            title = content.splitlines()[0][:60]
+        remember(palace_dir, room, title, content, args.tags)
+    elif args.action in ["recall", "search", "auto-recall"]:
+        q = args.query or " ".join(unknown)
+        if not q:
+            if args.action == "auto-recall":
+                sys.exit(0)
+            print("Usage: claude-palace recall [--room <room>] <query>")
+            sys.exit(1)
+        recall(palace_dir, q, room=args.room, auto_mode=(args.action == "auto-recall"))
+    elif args.action == "prune":
+        mem_id = args.id or (unknown[0] if unknown else None)
+        if not mem_id:
+            print("Usage: claude-palace prune --id <memory_id>")
+            sys.exit(1)
+        prune(palace_dir, mem_id=mem_id)
+    elif args.action == "consolidate":
+        ensure_palace_structure(palace_dir)
+        print(f"✓ Consolidated and indexed Memory Palace at: {palace_dir}")
+
+if __name__ == "__main__":
+    main()
