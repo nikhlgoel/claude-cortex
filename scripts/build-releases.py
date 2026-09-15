@@ -18,7 +18,7 @@ import tarfile
 import hashlib
 from pathlib import Path
 
-VERSION = "2.0.0"
+VERSION = "1.1.0"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = REPO_ROOT / "releases" / f"v{VERSION}"
 

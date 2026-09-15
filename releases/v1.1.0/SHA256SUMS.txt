@@ -1,0 +1,8 @@
+1682e910e85feeabef67fcf1d356947068c1af2f4eb008f50f280070f03770af  claude-cortex-v1.1.0-darwin-linux.tar.gz
+c0aab437446aed7b93ac23e717f9238caa67b7f75f5b4a40773b6afa44d2a195  claude-cortex-v1.1.0-desktop-mcp.tar.gz
+ee85c78e21324bb0cf175c4d686463bf0696108332c447e004655059686a5ba7  claude-cortex-v1.1.0-desktop-mcp.zip
+7993c7837a022d495b9063ae5f66c1e24e55399660c13b6097b30673eba49dea  claude-cortex-v1.1.0-full.tar.gz
+eec68271a48026c6386cf13e3d523bb7af11b2c5b0d6ef2e37c3a73c00366e8b  claude-cortex-v1.1.0-full.zip
+f2d2e535808d7ed1e33fdf3587f56451384f80d7d7bb6b9c3f5b6c0aa2fe3e6a  claude-cortex-v1.1.0-terminal-only.tar.gz
+1dc3d1cd9b61ad1cb100c5a9e9f232380e0454c54b804bbcab00aba0ccf60b4b  claude-cortex-v1.1.0-terminal-only.zip
+eec68271a48026c6386cf13e3d523bb7af11b2c5b0d6ef2e37c3a73c00366e8b  claude-cortex-v1.1.0-windows-x64.zip
