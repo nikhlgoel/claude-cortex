@@ -45,18 +45,20 @@ You have access to a rich set of integrated skills and tools. Autonomously lever
 - Project understanding, session transcripts, Memory Palace, and memory files (`memory/MEMORY.md`) are synchronized across all user profiles (`VL`, `WS`, and custom profiles).
 - Always persist critical architectural decisions, discovered quirks, and active tasks so that switching accounts or continuing work under another profile provides an instant, zero-loss mental model.
 
-## 5. Direct In-Session Cortex Command Interception
-- Whenever the user inputs ANY Cortex management command directly in the chat prompt (whether typed with `claude `, with `/`, or as plain keywords):
-  - `continue [profile]` / `claude continue [profile]` / `/continue [profile]`
-  - `switch [profile]` / `claude switch [profile]` / `/switch [profile]`
-  - `status` / `quota` / `claude status` / `claude quota` / `/status` / `/quota`
-  - `model [args]` / `claude model [args]` / `/model [args]`
-  - `provider [args]` / `claude provider [args]` / `/provider [args]`
-  - `palace [args]` / `claude palace [args]` / `/palace`
-  - `dream [args]` / `claude dream [args]` / `/dream`
-- **Mandatory Execution Directive**:
-  - Claude MUST NEVER treat these commands as casual conversational questions or say "I cannot run terminal commands".
-  - Claude MUST IMMEDIATELY invoke the `Bash` tool to execute: `~/.local/bin/claude <command> <args>`.
-  - For `continue` or `switch`: Claude must checkpoint current progress to `memory/MEMORY.md`, execute the switch via Bash, and advise: *"Switched to [profile]. Type `/exit` and run `claude continue` in terminal to resume with the new account's quota!"*
-  - For `model`: Claude executes `python3 ~/.claude/scripts/claude-models.py <args>` via Bash to display benchmark ratings or set models.
-  - For `provider`: Claude executes `python3 ~/.claude/scripts/claude-provider.py <args>` via Bash.
+## 5. Direct In-Session Cortex Command Interception (`cc` Protocol)
+- Whenever the user inputs ANY Cortex management command directly in the chat prompt (whether typed with `cc `, `claude `, with `/`, or as plain keywords):
+  - `cc continue [profile]` / `continue [profile]` / `/continue [profile]`
+  - `cc switch [profile]` / `switch [profile]` / `/switch [profile]`
+  - `cc status` / `status` / `cc capacity` / `quota`
+  - `cc model [args]` / `model [args]` / `/model [args]`
+  - `cc provider [args]` / `provider [args]` / `/provider [args]`
+  - `cc update [check|apply]` / `update`
+  - `cc palace [args]` / `palace [args]` / `/palace`
+  - `cc dream [args]` / `dream` / `/dream`
+- **Execution & Hook Contract**:
+  - Commands are intercepted at zero-token cost via the native `UserPromptSubmit` hook.
+  - If executed inside the LLM context, Claude MUST IMMEDIATELY invoke the `Bash` tool to execute: `~/.local/bin/cc <command> <args>`.
+  - For `continue` or `switch`: Checkpoint current progress to `memory/MEMORY.md`, execute the switch via Bash, and advise: *"Switched to [profile]. Type `/exit` and run `cc continue` in terminal to resume with the new account's quota!"*
+  - For `model`: Executes `python3 ~/.claude/scripts/claude-models.py <args>` via Bash to display benchmark ratings or set models.
+  - For `provider`: Executes `python3 ~/.claude/scripts/claude-provider.py <args>` via Bash.
+  - For `update`: Executes `python3 ~/.claude/scripts/claude-update.py <args>` via Bash.

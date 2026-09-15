@@ -208,15 +208,17 @@ show_status() {
   echo "  Spec Kit & Scrapling:  Connected globally"
   echo ""
   echo "Quick Commands:"
-  echo "  claude continue        Auto-check capacity across all accounts and resume session"
-  echo "  claude -t / --turbo    High-speed output with minimal token consumption"
-  echo "  claude research [top]  Frontier tech research & mathematical simulation testbench"
-  echo "  claude think [prompt]  Axiomatic Tri-Mind reasoning to break complexity walls"
-  echo "  claude switch [prof]   Toggle or switch active default profile"
-  echo "  claude menu            Open interactive visual command palette"
-  echo "  claude palace          View project Cognitive Memory Palace"
-  echo "  claude provider        Manage external API providers (Anthropic, OpenRouter, Gemini)"
-  echo "  claude docs            View comprehensive Cortex documentation"
+  echo "  cc continue            Auto-check capacity across all accounts and resume session"
+  echo "  cc -t / --turbo        High-speed output with minimal token consumption"
+  echo "  cc model [list|free]   Model explorer, benchmarks & instant model switcher"
+  echo "  cc update              Multi-component updater (CLI, VS Code, UV tools, Cortex repo)"
+  echo "  cc research [topic]    Frontier tech research & mathematical simulation testbench"
+  echo "  cc think [prompt]      Axiomatic Tri-Mind reasoning to break complexity walls"
+  echo "  cc switch [profile]    Toggle or switch active default profile"
+  echo "  cc menu                Open interactive visual command palette"
+  echo "  cc palace              View project Cognitive Memory Palace"
+  echo "  cc provider            Manage external API providers (Anthropic, OpenRouter, Gemini)"
+  echo "  cc docs                View comprehensive Cortex documentation"
   echo "======================================================================"
 }
 
@@ -553,6 +555,16 @@ if [ $# -gt 0 ]; then
     turbo|fast)
       shift
       exec "$0" --turbo "$@"
+      ;;
+    update|upgrade)
+      shift
+      UPDATE_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-update.py"
+      if [ -x "$UPDATE_SCRIPT" ]; then
+        exec python3 "$UPDATE_SCRIPT" "$@"
+      elif [ -f "${SCRIPT_DIR}/scripts/claude-update.py" ]; then
+        exec python3 "${SCRIPT_DIR}/scripts/claude-update.py" "$@"
+      fi
+      exit 0
       ;;
     desktop|gui)
       shift
@@ -1075,7 +1087,7 @@ if [ -t 0 ] && [ -t 1 ] && [ ${#REMAINING_ARGS[@]} -eq 0 ]; then
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     prov_label="API Key Mode"
   fi
-  printf "\033[38;5;39m[Claude Cortex]\033[0m %s | Shortcuts: claude continue • claude palace • claude dream • claude menu • claude docs\n" "$prov_label"
+  printf "\033[38;5;39m[Claude Cortex (cc)]\033[0m %s | Shortcuts: cc continue • cc model • cc palace • cc update • cc menu • cc docs\n" "$prov_label"
 fi
 
 # If ANTHROPIC_MODEL is set and not explicitly in REMAINING_ARGS, pass it to Claude Code

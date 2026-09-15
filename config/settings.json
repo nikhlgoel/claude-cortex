@@ -15,12 +15,34 @@
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "command": "python3 ~/.claude/scripts/cortex-pretool-hook.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/cortex-pretool-hook.py"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
       {
-        "command": "python3 ~/.claude/scripts/cortex-prompt-hook.py"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/cortex-prompt-hook.py"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/cortex-precompact-hook.py"
+          }
+        ]
       }
     ]
   }

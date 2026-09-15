@@ -100,7 +100,8 @@ fi
 # 4. Install Master Wrapper Script
 cp "${SCRIPT_DIR}/bin/claude" "${BIN_DIR}/claude"
 chmod +x "${BIN_DIR}/claude"
-echo "✓ Installed master wrapper to ${BIN_DIR}/claude"
+ln -sf "${BIN_DIR}/claude" "${BIN_DIR}/cc"
+echo "✓ Installed master wrapper to ${BIN_DIR}/claude and ${BIN_DIR}/cc"
 
 # 5. Install Global Instructions, Rules, Commands & Helper Engines
 mkdir -p "${CLAUDE_DIR}/rules" "${CLAUDE_DIR}/commands" "${CLAUDE_DIR}/scripts" "${CLAUDE_DIR}/skills" "${CLAUDE_DIR}/completion"
@@ -112,17 +113,17 @@ cp "${SCRIPT_DIR}/scripts/token-opt-clean.sh" "${CLAUDE_DIR}/scripts/token-opt-c
 chmod +x "${CLAUDE_DIR}/scripts/token-opt-clean.sh"
 
 # Copy python cognitive, orchestration, and MCP engines
-for py_script in claude-capacity-check.py claude-palace.py claude-dream.py claude-provider.py claude-models.py gemini-proxy.py claude-research.py claude-cognition.py cortex-mcp.py cortex-gateway.py cortex-pretool-hook.py cortex-prompt-hook.py; do
+for py_script in claude-capacity-check.py claude-palace.py claude-dream.py claude-provider.py claude-models.py claude-update.py gemini-proxy.py claude-research.py claude-cognition.py cortex-mcp.py cortex-gateway.py cortex-pretool-hook.py cortex-prompt-hook.py cortex-precompact-hook.py; do
   if [ -f "${SCRIPT_DIR}/scripts/${py_script}" ]; then
     cp "${SCRIPT_DIR}/scripts/${py_script}" "${CLAUDE_DIR}/scripts/${py_script}"
     chmod +x "${CLAUDE_DIR}/scripts/${py_script}"
     bin_name="${py_script%.py}"
-    if [ "$bin_name" != "gemini-proxy" ] && [ "$bin_name" != "cortex-pretool-hook" ] && [ "$bin_name" != "cortex-prompt-hook" ]; then
+    if [ "$bin_name" != "gemini-proxy" ] && [ "$bin_name" != "cortex-pretool-hook" ] && [ "$bin_name" != "cortex-prompt-hook" ] && [ "$bin_name" != "cortex-precompact-hook" ]; then
       ln -sf "${CLAUDE_DIR}/scripts/${py_script}" "${BIN_DIR}/${bin_name}"
     fi
   fi
 done
-echo "✓ Installed Memory Palace, Dream Simulation, Frontier Research, Cortex Gateway, and Token Optimization Hooks"
+echo "✓ Installed Memory Palace, Dream Simulation, Update Manager, and Token Optimization Hooks"
 
 # Merge settings.json cleanly
 if [ -f "${CLAUDE_DIR}/settings.json" ]; then

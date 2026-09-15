@@ -34,7 +34,7 @@ DOMAIN_KEYWORDS = {
 
 COMMAND_KEYWORDS = (
     "model", "provider", "effort", "reasoning", "turbo",
-    "capacity", "quota", "palace", "dream", "cortex", "docs", "menu"
+    "capacity", "quota", "palace", "dream", "cortex", "docs", "menu", "update"
 )
 
 def update_session_effort(level):
@@ -147,19 +147,25 @@ def execute_in_session_command(tokens):
         res = subprocess.run([sys.executable, script] + sub_args, capture_output=True, text=True)
         return res.stdout or res.stderr
 
-    elif cmd == "cortex":
+    elif cmd == "update":
+        script = os.path.join(SCRIPTS_DIR, "claude-update.py")
+        res = subprocess.run([sys.executable, script] + sub_args, capture_output=True, text=True)
+        return res.stdout or res.stderr
+
+    elif cmd in ("cortex", "cc", "help"):
         return (
             "======================================================================\n"
-            "                 Claude Cortex - In-Session Commands\n"
+            "                 Claude Cortex (cc) - In-Session Commands\n"
             "======================================================================\n"
             "Available commands inside interactive prompt:\n"
-            "  claude model [list|free|set <id>|info <id>]   Model explorer & selector\n"
-            "  claude provider [status|set <p>|key <p> <k>]  Provider manager\n"
-            "  claude effort [low|medium|high|max|auto]       Adjust reasoning depth\n"
-            "  claude turbo [on|off]                          Ultra-fast token saver\n"
-            "  claude capacity                                Subscription & quota check\n"
-            "  claude palace [status|recall <q>]              Memory Palace lookup\n"
-            "  claude dream                                   Dream simulator engine\n"
+            "  cc model [list|free|set <id>|info <id>]   Model explorer & selector\n"
+            "  cc provider [status|set <p>|key <p> <k>]  Provider manager\n"
+            "  cc effort [low|medium|high|max|auto]       Adjust reasoning depth\n"
+            "  cc turbo [on|off]                          Ultra-fast token saver\n"
+            "  cc capacity                                Subscription & quota check\n"
+            "  cc palace [status|recall <q>]              Memory Palace lookup\n"
+            "  cc dream                                   Dream simulator engine\n"
+            "  cc update [check|apply]                    Unified ecosystem updater\n"
             "======================================================================\n"
         )
 
@@ -200,20 +206,25 @@ def main():
         is_cmd = False
         cmd_args = []
 
-        # Case A: User typed 'claude <cmd> ...' or '!claude <cmd> ...'
-        if tokens[0] in ("claude", "!claude") and len(tokens) > 1:
+        # Case A: User typed 'cc <cmd> ...', 'claude <cmd> ...', '!cc', or '!claude'
+        if tokens[0].lower() in ("cc", "!cc", "claude", "!claude"):
             is_cmd = True
-            cmd_args = tokens[1:]
-        # Case B: User typed '/<cmd> ...' (e.g. /model, /provider)
-        elif tokens[0].startswith("/") and tokens[0][1:] in COMMAND_KEYWORDS:
-            is_cmd = True
-            cmd_args = [tokens[0][1:]] + tokens[1:]
-        # Case C: Standalone exact keyword commands (e.g. 'model free', 'effort high', 'turbo')
-        elif tokens[0] in COMMAND_KEYWORDS and (
+            cmd_args = tokens[1:] if len(tokens) > 1 else ["cortex"]
+        # Case B: User typed '/<cmd> ...' (e.g. /model, /provider, /cc, /update)
+        elif tokens[0].startswith("/"):
+            subcmd = tokens[0][1:].lower()
+            if subcmd in COMMAND_KEYWORDS or subcmd == "cc":
+                is_cmd = True
+                if subcmd == "cc":
+                    cmd_args = tokens[1:] if len(tokens) > 1 else ["cortex"]
+                else:
+                    cmd_args = [subcmd] + tokens[1:]
+        # Case C: Standalone exact keyword commands (e.g. 'model free', 'effort high', 'turbo', 'update')
+        elif tokens[0].lower() in COMMAND_KEYWORDS and (
             len(tokens) == 1
-            or tokens[1] in ("list", "set", "free", "paid", "info", "status", "key",
+            or tokens[1].lower() in ("list", "set", "free", "paid", "info", "status", "key",
                             "low", "medium", "high", "max", "auto", "on", "off",
-                            "recall", "remember", "query", "check")
+                            "recall", "remember", "query", "check", "apply", "upgrade", "sync")
         ):
             is_cmd = True
             cmd_args = tokens
