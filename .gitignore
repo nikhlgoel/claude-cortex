@@ -1,0 +1,31 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Backups & Staging
+*.bak
+*.swp
+*~
+staged_user_data_*/
+.claude-backups/
+
+# Local credentials & runtime states
+.credentials.json
+*.key
+.env
+providers.json.local
+models_cache.json
+history.jsonl
+projects/
+file-history/
+
+# Distribution archives (tracked in releases/ or built dynamically)
+dist/
+*.tmp
+*.log
+
+# OS metadata
+.DS_Store
+Thumbs.db

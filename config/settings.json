@@ -1,0 +1,14 @@
+{
+  "includeCoAuthoredBy": false,
+  "enableWorkflows": true,
+  "theme": "dark",
+  "inputNeededNotifEnabled": true,
+  "agentPushNotifEnabled": true,
+  "model": "opus",
+  "effortLevel": "low",
+  "autoCompactEnabled": true,
+  "autoCompactWindow": 100000,
+  "cleanupPeriodDays": 7,
+  "bashOutputMaxChars": 20000,
+  "taskOutputMaxChars": 20000
+}

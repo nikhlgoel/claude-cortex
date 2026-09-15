@@ -1,0 +1,1062 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Claude Cortex: Multi-Account Manager & Productivity Suite
+# Cross-profile authentication isolation, synced/isolated modes, token optimization,
+# capacity auto-failover, Spec Kit, Scrapling MCP, Memory Palace, API providers,
+# reasoning levels, autocompletion & interactive docs.
+# ==============================================================================
+
+set -e
+
+PROFILES_DIR="${HOME}/.claude-profiles"
+CURRENT_PROFILE_FILE="${PROFILES_DIR}/current_profile"
+SHARED_CLAUDE_DIR="${HOME}/.claude"
+CLEANUP_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/token-opt-clean.sh"
+CAPACITY_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-capacity-check.py"
+PROVIDER_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-provider.py"
+PALACE_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-palace.py"
+DREAM_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-dream.py"
+RESEARCH_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-research.py"
+COGNITION_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-cognition.py"
+
+# Locate real Claude Code binary
+REAL_CLAUDE="${HOME}/.local/bin/claude.real"
+if [ ! -x "$REAL_CLAUDE" ]; then
+  LATEST_VER=$(ls -v "${HOME}/.local/share/claude/versions/" 2>/dev/null | tail -n 1 || true)
+  if [ -n "$LATEST_VER" ] && [ -x "${HOME}/.local/share/claude/versions/${LATEST_VER}" ]; then
+    REAL_CLAUDE="${HOME}/.local/share/claude/versions/${LATEST_VER}"
+  else
+    echo "Error: Claude Code binary not found at ${REAL_CLAUDE} or in ~/.local/share/claude/versions/" >&2
+    exit 1
+  fi
+fi
+
+mkdir -p "${PROFILES_DIR}"
+
+list_all_profiles() {
+  local list=()
+  for pdir in "${PROFILES_DIR}"/*; do
+    if [ -d "$pdir" ]; then
+      local bname
+      bname=$(basename "$pdir")
+      if [ "$bname" != "." ] && [ "$bname" != ".." ]; then
+        list+=("$bname")
+      fi
+    fi
+  done
+  echo "${list[@]}"
+}
+
+get_active_profile() {
+  if [ -n "${CLAUDE_PROFILE:-}" ]; then
+    echo "$CLAUDE_PROFILE" | tr '[:upper:]' '[:lower:]'
+  elif [ -f "$CURRENT_PROFILE_FILE" ]; then
+    tr -d ' \n\r' < "$CURRENT_PROFILE_FILE" | tr '[:upper:]' '[:lower:]'
+  else
+    local all=($(list_all_profiles))
+    if [ ${#all[@]} -gt 0 ]; then
+      echo "${all[0]}"
+    else
+      echo "vl"
+    fi
+  fi
+}
+
+get_profile_mode() {
+  local prof="$1"
+  local mode_file="${PROFILES_DIR}/${prof}/.profile_mode"
+  if [ -f "$mode_file" ]; then
+    tr -d ' \n\r' < "$mode_file"
+  else
+    echo "synced"
+  fi
+}
+
+ensure_profile_structure() {
+  local prof="$1"
+  local mode="${2:-synced}"
+  local target_dir="${PROFILES_DIR}/${prof}"
+  mkdir -p "$target_dir"
+
+  echo "$mode" > "${target_dir}/.profile_mode"
+
+  if [ "$mode" = "synced" ]; then
+    local shared_items=(
+      "projects" "file-history" "history.jsonl" "commands"
+      "skills" "rules" "plugins" "settings.json" "mcp-configs"
+      "session-env" "shell-snapshots" "ide" "palace"
+    )
+
+    for item in "${shared_items[@]}"; do
+      local src="${SHARED_CLAUDE_DIR}/${item}"
+      local dst="${target_dir}/${item}"
+      if [ ! -e "$dst" ] && [ -e "$src" ]; then
+        ln -sf "$src" "$dst"
+      fi
+    done
+  else
+    mkdir -p "${target_dir}/projects" "${target_dir}/commands" "${target_dir}/mcp-configs"
+    if [ ! -f "${target_dir}/settings.json" ] && [ -f "${SHARED_CLAUDE_DIR}/settings.json" ]; then
+      cp "${SHARED_CLAUDE_DIR}/settings.json" "${target_dir}/settings.json"
+    fi
+  fi
+}
+
+get_profile_email() {
+  local prof="$1"
+  local cfg="${PROFILES_DIR}/${prof}/.claude.json"
+  if [ -f "$cfg" ]; then
+    python3 -c "
+import json
+try:
+    with open('$cfg') as f:
+        d = json.load(f)
+    print(d.get('oauthAccount', {}).get('emailAddress') or '')
+except Exception:
+    print('')
+" 2>/dev/null
+  else
+    local email_file="${PROFILES_DIR}/${prof}/.profile_email"
+    if [ -f "$email_file" ]; then
+      cat "$email_file" 2>/dev/null | tr -d ' \n\r'
+    else
+      echo ""
+    fi
+  fi
+}
+
+is_profile_authenticated() {
+  local prof="$1"
+  local creds="${PROFILES_DIR}/${prof}/.credentials.json"
+  if [ ! -f "$creds" ]; then
+    echo "false"
+    return
+  fi
+  python3 -c "
+import json
+try:
+    with open('$creds') as f:
+        d = json.load(f)
+    print('true' if 'claudeAiOauth' in d and d['claudeAiOauth'].get('accessToken') else 'false')
+except Exception:
+    print('false')
+" 2>/dev/null || echo "false"
+}
+
+sync_active_to_home() {
+  local prof="$1"
+  local src_cred="${PROFILES_DIR}/${prof}/.credentials.json"
+  local dst_cred="${SHARED_CLAUDE_DIR}/.credentials.json"
+  if [ -f "$src_cred" ]; then
+    rm -f "$dst_cred"
+    cp "$src_cred" "$dst_cred" 2>/dev/null || true
+  fi
+  local src_json="${PROFILES_DIR}/${prof}/.claude.json"
+  local dst_json="${HOME}/.claude.json"
+  if [ -f "$src_json" ]; then
+    rm -f "$dst_json"
+    cp "$src_json" "$dst_json" 2>/dev/null || true
+  fi
+}
+
+show_status() {
+  if [ -x "$CAPACITY_SCRIPT" ]; then
+    python3 "$CAPACITY_SCRIPT"
+  else
+    local cur
+    cur=$(get_active_profile)
+    echo "======================================================================"
+    echo "              Claude Cortex - Multi-Account Status"
+    echo "======================================================================"
+    echo "Active Default Profile:  $(echo "$cur" | tr '[:lower:]' '[:upper:]')"
+    echo ""
+    echo "Configured Profiles:"
+    printf "  %-12s %-10s %-30s %s\n" "PROFILE / KEY" "MODE" "EMAIL" "STATUS"
+    printf "  %-12s %-10s %-30s %s\n" "-------------" "----" "-----" "------"
+    local all=($(list_all_profiles))
+    local idx=1
+    for pname in "${all[@]}"; do
+      local pmode
+      pmode=$(get_profile_mode "$pname" | tr '[:lower:]' '[:upper:]')
+      local pemail
+      pemail=$(get_profile_email "$pname")
+      local pauth
+      pauth=$(is_profile_authenticated "$pname")
+      local status_str="NOT LOGGED IN (claude login $pname)"
+      if [ "$pauth" = "true" ]; then status_str="AUTHENTICATED"; fi
+      local active_tag=""
+      if [ "$pname" = "$cur" ]; then active_tag=" <-- ACTIVE"; fi
+      printf "  %-12s %-10s %-30s %s%s\n" "${pname} (-${idx})" "$pmode" "${pemail:-[Not Set]}" "$status_str" "$active_tag"
+      idx=$((idx + 1))
+    done
+  fi
+
+  echo ""
+  echo "Productivity Enhancements:"
+  echo "  Models:                Claude Sonnet 5, Opus 5, Haiku 4.5"
+  echo "  High-Velocity Turbo:   Active (claude -t / --turbo for minimal tokens & maximum speed)"
+  echo "  Cognitive Elevation:   Active (claude think / smart for Tri-Mind dialectic reasoning)"
+  echo "  Frontier Research:     Active (claude research for arXiv & first-principles discovery)"
+  echo "  Cognitive Palace:      Active (Blueprint, Workshop, Graveyard, Decisions, Study)"
+  echo "  Live Pairing:          Active (/pair and /discuss interactive workflows)"
+  echo "  API Providers:         OAuth, Anthropic API, OpenRouter, Google Gemini Studio"
+  echo "  Spec Kit & Scrapling:  Connected globally"
+  echo ""
+  echo "Quick Commands:"
+  echo "  claude continue        Auto-check capacity across all accounts and resume session"
+  echo "  claude -t / --turbo    High-speed output with minimal token consumption"
+  echo "  claude research [top]  Frontier tech research & mathematical simulation testbench"
+  echo "  claude think [prompt]  Axiomatic Tri-Mind reasoning to break complexity walls"
+  echo "  claude switch [prof]   Toggle or switch active default profile"
+  echo "  claude menu            Open interactive visual command palette"
+  echo "  claude palace          View project Cognitive Memory Palace"
+  echo "  claude provider        Manage external API providers (Anthropic, OpenRouter, Gemini)"
+  echo "  claude docs            View comprehensive Cortex documentation"
+  echo "======================================================================"
+}
+
+show_docs() {
+  cat <<'EOF'
+===============================================================================
+                     CLAUDE CORTEX USER GUIDE
+===============================================================================
+
+1. ACCOUNT & PROFILE MANAGEMENT
+-------------------------------------------------------------------------------
+  claude -1 / claude -2   Launch by profile index (1st profile, 2nd profile)
+  claude -ws / claude -vl Launch by profile name (e.g. claude -work, claude -main)
+  claude switch           Toggle between configured profiles
+  claude switch <profile> Set specific profile as active default
+  claude profile add      Launch interactive wizard to add a new account
+  claude profile list     List all profiles, their mode, and auth statuses
+  claude profile remove   Delete an unused profile
+  claude login <profile>  Authenticate a profile via browser OAuth
+  claude status / quota   Display real-time capacity and rate-limit countdowns
+  claude menu             Launch interactive visual terminal menu
+
+2. LATEST MODEL ALIASES & REASONING CONTROL
+-------------------------------------------------------------------------------
+  claude -s / --sonnet    Launch Claude Sonnet 5 (claude-sonnet-5)
+  claude -o / --opus      Launch Claude Opus 5 (claude-opus-5)
+  claude -h / --haiku     Launch Claude Haiku 4.5 (claude-haiku-4-5)
+  claude --model <name>   Launch any custom model
+
+  REASONING EFFORT:
+  claude -e <level>       Set reasoning effort (low, medium, high, xhigh, max)
+  claude --think-low      Quick reasoning (minimal thinking tokens)
+  claude --think-med      Standard reasoning (medium thinking tokens)
+  claude --think-high     Deep reasoning (high thinking tokens)
+  claude --think-max      Maximum reasoning effort for deep architecture
+  claude --think-off      Disable thinking tokens entirely
+  claude reasoning <lvl>  Configure default reasoning level in settings.json
+
+3. AUTONOMOUS CAPACITY-BASED AUTO-FAILOVER (RATE-LIMIT BYPASS)
+-------------------------------------------------------------------------------
+  When limits hit on your active account:
+    claude continue
+  Scans all configured accounts, checks reset times, automatically picks an
+  account with free capacity, and resumes session with --continue!
+
+4. COGNITIVE MEMORY PALACE
+-------------------------------------------------------------------------------
+  Organizes knowledge human-like across 5 specialized cognitive rooms:
+    • Blueprint:   Architecture, components, data models, tech stack
+    • Workshop:    Procedural workflows, build steps, test protocols
+    • Graveyard:   Bugs solved, pitfalls, edge cases, anti-patterns
+    • Decisions:   Architectural Decision Records (ADRs) and trade-offs
+    • Study:       Active working memory, immediate session goals
+
+  Commands:
+    claude palace              View palace map & rooms
+    claude remember <r> <note> Deposit a breakthrough or fix into a room
+    claude recall <query>      Recall past solutions matching a topic
+    In-session: /palace, /remember, /recall
+
+5. LIVE PAIRING & CO-PILOT SKILL
+-------------------------------------------------------------------------------
+  Interactive back-and-forth discussion mode while Claude works:
+    /pair or /discuss
+  1. Claude discusses the proposed step and trade-offs.
+  2. As soon as you agree, Claude auto-starts execution without delay.
+  3. Verifies changes and proactively asks for follow-up amendments!
+
+6. EXTERNAL API PROVIDERS (OPENROUTER, GEMINI, ANTHROPIC API)
+-------------------------------------------------------------------------------
+  Continue working when subscription quotas are completely exhausted:
+    claude provider status     List providers & active selection
+    claude provider set <p>    Switch to oauth, anthropic, openrouter, or gemini
+    claude provider config <p> Set API keys and models
+    claude --provider openrouter  Launch with OpenRouter.ai
+    claude --provider gemini      Launch with Google Gemini AI Studio
+    claude --api-key <key>        Direct Anthropic API key override
+===============================================================================
+EOF
+}
+
+interactive_menu() {
+  local cur
+  cur=$(get_active_profile)
+  local cur_email
+  cur_email=$(get_profile_email "$cur")
+
+  echo "======================================================================"
+  echo "              Claude Cortex - Interactive Menu"
+  echo "======================================================================"
+  echo "  Active Account:  $(echo "$cur" | tr '[:lower:]' '[:upper:]') (${cur_email:-[Active]})"
+  echo ""
+  echo "  [1] Launch Claude Code Prompt (Sonnet 5)"
+  echo "  [2] Auto-Continue (Check capacity across accounts and resume session)"
+  echo "  [3] Switch Active Account"
+  echo "  [4] Check Quota & Limit Status Across Accounts"
+  echo "  [5] Cognitive Memory Palace (Inspect / Remember / Recall)"
+  echo "  [6] Manage API Providers (Anthropic / OpenRouter / Google Gemini)"
+  echo "  [7] Set Reasoning Effort (Low / Medium / High / Max)"
+  echo "  [8] Optimize & Clean Caches (Token & Storage Cleanup)"
+  echo "  [9] Add New Account Profile (Wizard)"
+  echo "  [C] Cognitive Dream Simulation (Stress Test & Bug Hunt)"
+  echo "  [D] View Documentation & Manual"
+  echo "  [0] Exit"
+  echo "======================================================================"
+  echo -n "Select an option [1-9, C, D, 0 to exit] (Default: 1): "
+  read -r menu_choice
+  menu_choice="${menu_choice:-1}"
+
+  case "$menu_choice" in
+    1) exec "$0" ;;
+    2) exec "$0" continue ;;
+    3)
+      echo ""
+      echo "Configured profiles:"
+      local all=($(list_all_profiles))
+      local idx=1
+      for p in "${all[@]}"; do
+        local em
+        em=$(get_profile_email "$p")
+        local is_act=""
+        if [ "$p" = "$cur" ]; then is_act=" <-- ACTIVE"; fi
+        echo "  [$idx] $(echo "$p" | tr '[:lower:]' '[:upper:]') (${em:-[Profile]})$is_act"
+        idx=$((idx + 1))
+      done
+      echo -n "Enter profile name or number: "
+      read -r target_choice
+      if [ -n "$target_choice" ]; then exec "$0" switch "$target_choice"; fi
+      ;;
+    4) exec "$0" status ;;
+    5)
+      if [ -x "$PALACE_SCRIPT" ]; then python3 "$PALACE_SCRIPT" status; fi
+      ;;
+    6)
+      if [ -x "$PROVIDER_SCRIPT" ]; then python3 "$PROVIDER_SCRIPT" status; fi
+      ;;
+    7)
+      echo -n "Enter reasoning effort level (low, medium, high, max, off): "
+      read -r eff_level
+      if [ -n "$eff_level" ]; then exec "$0" reasoning "$eff_level"; fi
+      ;;
+    8) exec "$0" clean ;;
+    9) exec "$0" profile add ;;
+    c|C) exec "$0" dream ;;
+    d|D) exec "$0" docs ;;
+    0|q|exit) exit 0 ;;
+    *) exec "$0" ;;
+  esac
+}
+
+interactive_add_profile() {
+  local prof_name="$1"
+  if [ -z "$prof_name" ]; then
+    echo -n "Enter new profile name (e.g. work, client1, test): "
+    read -r prof_name
+  fi
+  prof_name=$(echo "$prof_name" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+
+  if [ -z "$prof_name" ]; then
+    echo "Error: Invalid profile name." >&2
+    exit 1
+  fi
+
+  if [ -d "${PROFILES_DIR}/${prof_name}" ]; then
+    echo "Profile '${prof_name}' already exists at ${PROFILES_DIR}/${prof_name}."
+    echo "To re-authenticate, run: claude login ${prof_name}"
+    exit 0
+  fi
+
+  echo ""
+  echo "Choose Profile Sharing Mode:"
+  echo "-----------------------------------------------------------------------"
+  echo "  [1] SYNCED (Recommended)"
+  echo "      • Shares project transcripts, memory, Cognitive Palace, custom skills,"
+  echo "        commands, rules, and settings with your other profiles."
+  echo "      • Only auth credentials and usage limits are isolated."
+  echo ""
+  echo "  [2] ISOLATED (Completely Separate)"
+  echo "      • Independent workspace with separate chat history and settings."
+  echo "-----------------------------------------------------------------------"
+  echo -n "Select mode [1/2] (Default: 1): "
+  read -r mode_choice
+
+  local mode="synced"
+  if [ "$mode_choice" = "2" ] || [ "$mode_choice" = "isolated" ]; then
+    mode="isolated"
+  fi
+
+  ensure_profile_structure "$prof_name" "$mode"
+  echo ""
+  echo "✓ Successfully created profile '${prof_name}' in [$(echo "$mode" | tr '[:lower:]' '[:upper:]')] mode."
+
+  echo ""
+  echo -n "Would you like to log in to this account now? [Y/n]: "
+  read -r login_choice
+  login_choice=$(echo "${login_choice:-y}" | tr '[:upper:]' '[:lower:]')
+
+  if [ "$login_choice" = "y" ] || [ "$login_choice" = "yes" ]; then
+    echo "Starting browser authentication for '${prof_name}'..."
+    export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/${prof_name}"
+    export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/${prof_name}"
+    "$REAL_CLAUDE" auth login
+    sync_active_to_home "$prof_name"
+    echo "✓ Authentication completed for '${prof_name}'."
+  fi
+
+  echo ""
+  echo -n "Would you like to set '${prof_name}' as your active default profile? [y/N]: "
+  read -r set_default_choice
+  set_default_choice=$(echo "${set_default_choice:-n}" | tr '[:upper:]' '[:lower:]')
+  if [ "$set_default_choice" = "y" ] || [ "$set_default_choice" = "yes" ]; then
+    echo "$prof_name" > "$CURRENT_PROFILE_FILE"
+    sync_active_to_home "$prof_name"
+    echo "✓ Active default profile set to '${prof_name}'."
+  fi
+  exit 0
+}
+
+interactive_remove_profile() {
+  local prof_name="$1"
+  if [ -z "$prof_name" ]; then
+    echo -n "Enter name of profile to remove: "
+    read -r prof_name
+  fi
+  prof_name=$(echo "$prof_name" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+
+  if [ ! -d "${PROFILES_DIR}/${prof_name}" ]; then
+    echo "Error: Profile '${prof_name}' does not exist." >&2
+    exit 1
+  fi
+
+  local cur
+  cur=$(get_active_profile)
+  if [ "$prof_name" = "$cur" ]; then
+    local all=($(list_all_profiles))
+    local fallback=""
+    for p in "${all[@]}"; do
+      if [ "$p" != "$prof_name" ]; then
+        fallback="$p"
+        break
+      fi
+    done
+    if [ -n "$fallback" ]; then
+      echo "$fallback" > "$CURRENT_PROFILE_FILE"
+      echo "Active profile switched to '${fallback}'."
+    fi
+  fi
+
+  echo -n "Are you sure you want to remove profile '${prof_name}'? [y/N]: "
+  read -r confirm
+  if [ "$confirm" = "y" ] || [ "$confirm" = "yes" ]; then
+    rm -rf "${PROFILES_DIR}/${prof_name}"
+    echo "✓ Profile '${prof_name}' has been removed."
+  else
+    echo "Aborted."
+  fi
+  exit 0
+}
+
+# Subcommand dispatch
+if [ $# -gt 0 ]; then
+  case "$1" in
+    menu|-m|--menu)
+      interactive_menu
+      exit 0
+      ;;
+    dream|-d|--dream)
+      shift
+      if [ -x "$DREAM_SCRIPT" ]; then
+        exec python3 "$DREAM_SCRIPT" "$@"
+      elif command -v claude-dream >/dev/null 2>&1; then
+        exec claude-dream "$@"
+      fi
+      exit 0
+      ;;
+    palace)
+      shift
+      if [ -x "$PALACE_SCRIPT" ]; then
+        exec python3 "$PALACE_SCRIPT" "$@"
+      fi
+      exit 0
+      ;;
+    remember)
+      shift
+      if [ -x "$PALACE_SCRIPT" ]; then
+        exec python3 "$PALACE_SCRIPT" remember "$@"
+      fi
+      exit 0
+      ;;
+    recall)
+      shift
+      if [ -x "$PALACE_SCRIPT" ]; then
+        exec python3 "$PALACE_SCRIPT" recall "$@"
+      fi
+      exit 0
+      ;;
+    provider|providers)
+      shift
+      if [ -x "$PROVIDER_SCRIPT" ]; then
+        exec python3 "$PROVIDER_SCRIPT" "$@"
+      fi
+      exit 0
+      ;;
+    model|models)
+      shift
+      MODELS_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-models.py"
+      if [ -x "$MODELS_SCRIPT" ]; then
+        exec python3 "$MODELS_SCRIPT" "$@"
+      elif [ -f "${SCRIPT_DIR}/scripts/claude-models.py" ]; then
+        exec python3 "${SCRIPT_DIR}/scripts/claude-models.py" "$@"
+      elif command -v claude-models >/dev/null 2>&1; then
+        exec claude-models "$@"
+      fi
+      exit 0
+      ;;
+    research|discovery)
+      shift
+      if [ -x "$RESEARCH_SCRIPT" ]; then
+        exec python3 "$RESEARCH_SCRIPT" "$@"
+      elif command -v claude-research >/dev/null 2>&1; then
+        exec claude-research "$@"
+      fi
+      exit 0
+      ;;
+    think|smart|cognition)
+      shift
+      if [ -x "$COGNITION_SCRIPT" ]; then
+        exec python3 "$COGNITION_SCRIPT" "$@"
+      elif command -v claude-cognition >/dev/null 2>&1; then
+        exec claude-cognition "$@"
+      fi
+      exit 0
+      ;;
+    turbo|fast)
+      shift
+      exec "$0" --turbo "$@"
+      ;;
+    desktop|gui)
+      shift
+      target_prof="${1:-}"
+      if [ -z "$target_prof" ]; then
+        target_prof="$(get_active_profile)"
+      fi
+      target_prof="$(echo "$target_prof" | tr '[:upper:]' '[:lower:]')"
+      case "$target_prof" in
+        ws|1) data_dir="${HOME}/.config/claude-profile-1" ;;
+        vl|2) data_dir="${HOME}/.config/claude-profile-2" ;;
+        *) data_dir="${HOME}/.config/claude-${target_prof}" ;;
+      esac
+      mkdir -p "$data_dir"
+      desktop_bin=""
+      for b in claude-desktop-unofficial claude-desktop; do
+        if command -v "$b" >/dev/null 2>&1; then desktop_bin="$b"; break; fi
+      done
+      if [ -n "$desktop_bin" ]; then
+        echo "✓ Launching Claude Desktop with profile: ${target_prof^^}..."
+        nohup "$desktop_bin" --user-data-dir="$data_dir" >/dev/null 2>&1 &
+      else
+        echo "Claude Desktop application not found in PATH."
+      fi
+      exit 0
+      ;;
+    vscode|code)
+      shift
+      target_prof="${1:-}"
+      if [ -z "$target_prof" ]; then
+        target_prof="$(get_active_profile)"
+      fi
+      target_prof="$(echo "$target_prof" | tr '[:upper:]' '[:lower:]')"
+      sync_active_to_home "$target_prof"
+      echo "$target_prof" > "$CURRENT_PROFILE_FILE"
+      echo "✓ Launching VS Code configured with Claude profile: ${target_prof^^}..."
+      CLAUDE_PROFILE="$target_prof" nohup code "${2:-.}" >/dev/null 2>&1 &
+      exit 0
+      ;;
+    reasoning|effort)
+      shift
+      level=$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')
+      if [ -n "$level" ]; then
+        python3 -c "
+import json, os
+p = os.path.expanduser('~/.claude/settings.json')
+try:
+    with open(p) as f: d = json.load(f)
+except Exception: d = {}
+d['effortLevel'] = '$level'
+with open(p, 'w') as f: json.dump(d, f, indent=2)
+print('✓ Default reasoning effort set to: $level')
+"
+      else
+        python3 -c "
+import json, os
+p = os.path.expanduser('~/.claude/settings.json')
+try:
+    with open(p) as f: d = json.load(f)
+except Exception: d = {}
+print('Current effort level:', d.get('effortLevel', 'default (normal)'))
+print('Valid levels: low, medium, high, xhigh, max, off')
+"
+      fi
+      exit 0
+      ;;
+    switch)
+      target=$(echo "${2:-}" | tr '[:upper:]' '[:lower:]')
+      target="${target#-}"
+      target="${target#-}"
+      all=($(list_all_profiles))
+      if [ -z "$target" ]; then
+        if [ -x "$CAPACITY_SCRIPT" ]; then
+          target=$(python3 "$CAPACITY_SCRIPT" --best 2>/dev/null || true)
+        fi
+        if [ -z "$target" ]; then
+          cur=$(get_active_profile)
+          for p in "${all[@]}"; do
+            if [ "$p" != "$cur" ]; then target="$p"; break; fi
+          done
+          if [ -z "$target" ]; then target="$cur"; fi
+        fi
+      fi
+
+      if [[ "$target" =~ ^[0-9]+$ ]]; then
+        idx=$((target - 1))
+        if [ $idx -ge 0 ] && [ $idx -lt ${#all[@]} ]; then
+          target="${all[$idx]}"
+        fi
+      fi
+
+      if [ ! -d "${PROFILES_DIR}/${target}" ]; then
+        echo "Error: Profile '${target}' not found. Available profiles:" >&2
+        for p in "${all[@]}"; do echo "  - $p"; done
+        exit 1
+      fi
+      echo "$target" > "$CURRENT_PROFILE_FILE"
+      sync_active_to_home "$target"
+      email=$(get_profile_email "$target")
+      echo "✓ Switched active Claude Code account to: $(echo "$target" | tr '[:lower:]' '[:upper:]') (${email:-[Active]})"
+      echo "  All subsequent 'claude' commands will run under this profile."
+      exit 0
+      ;;
+    profile|profiles)
+      shift
+      subcmd="${1:-list}"
+      case "$subcmd" in
+        add|new|create) interactive_add_profile "${2:-}" ;;
+        remove|rm|delete) interactive_remove_profile "${2:-}" ;;
+        list|ls|status) show_status; exit 0 ;;
+        switch)
+          target=$(echo "${2:-}" | tr '[:upper:]' '[:lower:]')
+          target="${target#-}"
+          target="${target#-}"
+          if [ -z "$target" ] || [ ! -d "${PROFILES_DIR}/${target}" ]; then
+            echo "Error: Profile '${target}' does not exist." >&2
+            exit 1
+          fi
+          echo "$target" > "$CURRENT_PROFILE_FILE"
+          sync_active_to_home "$target"
+          echo "✓ Switched to profile: ${target}"
+          exit 0
+          ;;
+        *) show_status; exit 0 ;;
+      esac
+      ;;
+    add-profile|new-profile)
+      interactive_add_profile "${2:-}"
+      ;;
+    whoami|status|quota|limits)
+      show_status
+      exit 0
+      ;;
+    docs|documentation)
+      show_docs
+      exit 0
+      ;;
+    login)
+      target=$(echo "${2:-}" | tr '[:upper:]' '[:lower:]')
+      target="${target#-}"
+      target="${target#-}"
+      if [ -z "$target" ]; then target=$(get_active_profile); fi
+      if [ ! -d "${PROFILES_DIR}/${target}" ]; then
+        ensure_profile_structure "$target" "synced"
+      fi
+      echo "Starting authentication login for $(echo "$target" | tr '[:lower:]' '[:upper:]')..."
+      export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/${target}"
+      export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/${target}"
+      "$REAL_CLAUDE" auth login
+      sync_active_to_home "$target"
+      echo ""
+      echo "✓ Authentication verified for $(echo "$target" | tr '[:lower:]' '[:upper:]')."
+      exit 0
+      ;;
+    clean)
+      if [ -x "$CLEANUP_SCRIPT" ]; then "$CLEANUP_SCRIPT" true; fi
+      exit 0
+      ;;
+    continue)
+      shift
+      target=""
+      all=($(list_all_profiles))
+      if [ $# -gt 0 ]; then
+        candidate=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+        candidate="${candidate#-}"
+        candidate="${candidate#-}"
+        if [[ "$candidate" =~ ^[0-9]+$ ]]; then
+          idx=$((candidate - 1))
+          if [ $idx -ge 0 ] && [ $idx -lt ${#all[@]} ]; then
+            candidate="${all[$idx]}"
+          fi
+        fi
+        if [ -d "${PROFILES_DIR}/${candidate}" ]; then
+          target="$candidate"
+          shift
+        fi
+      fi
+
+      # Capacity-aware selection: if no target passed, scan all accounts for available capacity
+      if [ -z "$target" ]; then
+        if [ -x "$CAPACITY_SCRIPT" ]; then
+          echo "Scanning configured accounts for available capacity..."
+          python3 "$CAPACITY_SCRIPT"
+          best=$(python3 "$CAPACITY_SCRIPT" --best 2>/dev/null || true)
+          if [ -n "$best" ] && [ -d "${PROFILES_DIR}/${best}" ]; then
+            target="$best"
+          fi
+        fi
+        if [ -z "$target" ]; then
+          cur=$(get_active_profile)
+          for p in "${all[@]}"; do
+            if [ "$p" != "$cur" ]; then target="$p"; break; fi
+          done
+          if [ -z "$target" ]; then target="$cur"; fi
+        fi
+      fi
+
+      # If selected profile is not authenticated, prompt login
+      if [ "$(is_profile_authenticated "$target")" != "true" ]; then
+        echo "Selected profile '$(echo "$target" | tr '[:lower:]' '[:upper:]')' is not logged in."
+        echo "Opening browser to authenticate..."
+        export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/${target}"
+        export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/${target}"
+        "$REAL_CLAUDE" auth login
+        sync_active_to_home "$target"
+      fi
+
+      ensure_profile_structure "$target" "$(get_profile_mode "$target")"
+      sync_active_to_home "$target"
+      echo "$target" > "$CURRENT_PROFILE_FILE"
+      pemail=$(get_profile_email "$target")
+      echo ""
+      echo "✓ Resuming session using $(echo "$target" | tr '[:lower:]' '[:upper:]') (${pemail:-[Active]})..."
+      export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/${target}"
+      export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/${target}"
+      export COMPACT_CONTEXT_THRESHOLD=100000
+      export COMPACT_CONTEXT_INTERVAL=30000
+      export CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000
+      export BASH_MAX_OUTPUT_LENGTH=20000
+      # Translate model, reasoning, and permission flags for continue
+      translated_continue_args=()
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          -y|--yes) translated_continue_args+=("--dangerously-skip-permissions"); shift ;;
+          -s|--sonnet|--sonnet-5) translated_continue_args+=("--model" "claude-sonnet-5"); shift ;;
+          -o|--opus|--opus-5) translated_continue_args+=("--model" "claude-opus-5"); shift ;;
+          -h|--haiku|--haiku-4-5) translated_continue_args+=("--model" "claude-haiku-4-5"); shift ;;
+          -e|--effort|-r|--reasoning)
+            shift
+            eff_val="${1:-high}"
+            translated_continue_args+=("--effort" "$eff_val")
+            if [ $# -gt 0 ]; then shift; fi
+            ;;
+          --effort=*|--reasoning=*) translated_continue_args+=("--effort" "${1#*=}"); shift ;;
+          --think-low) translated_continue_args+=("--effort" "low"); shift ;;
+          --think-med) translated_continue_args+=("--effort" "medium"); shift ;;
+          --think-high) translated_continue_args+=("--effort" "high"); shift ;;
+          --think-max) translated_continue_args+=("--effort" "max"); shift ;;
+          --think-off) translated_continue_args+=("--thinking" "disabled"); shift ;;
+          -t|--turbo|--fast)
+            translated_continue_args+=("--model" "claude-haiku-4-5" "--thinking" "disabled")
+            export CLAUDE_TURBO=1
+            export BASH_MAX_OUTPUT_LENGTH=8000
+            shift
+            ;;
+          *) translated_continue_args+=("$1"); shift ;;
+        esac
+      done
+      exec "$REAL_CLAUDE" --continue "${translated_continue_args[@]}"
+      ;;
+  esac
+fi
+
+# Fresh Installation Check: If no profiles exist at all
+all_profiles=($(list_all_profiles))
+if [ ${#all_profiles[@]} -eq 0 ]; then
+  echo "======================================================================"
+  echo "              Welcome to Claude Cortex!"
+  echo "======================================================================"
+  echo "No profile found. Initializing primary profile [MAIN]..."
+  ensure_profile_structure "main" "synced"
+  echo "main" > "$CURRENT_PROFILE_FILE"
+  echo ""
+  echo "Please complete one-time browser login for your primary account:"
+  export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/main"
+  export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/main"
+  "$REAL_CLAUDE" auth login
+  sync_active_to_home "main"
+  echo "✓ Primary profile [MAIN] authenticated and ready!"
+  echo "======================================================================"
+fi
+
+# Auto-load active external API provider if configured
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -x "$PROVIDER_SCRIPT" ]; then
+  eval "$(python3 "$PROVIDER_SCRIPT" env 2>/dev/null || true)"
+fi
+
+# Parse profile flags, model shortcuts, reasoning levels, and arguments
+SELECTED_PROFILE=""
+REMAINING_ARGS=()
+all=($(list_all_profiles))
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --profile=*)
+      val="${1#*=}"
+      SELECTED_PROFILE=$(echo "$val" | tr '[:upper:]' '[:lower:]')
+      shift
+      ;;
+    --profile)
+      shift
+      SELECTED_PROFILE=$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')
+      if [ $# -gt 0 ]; then shift; fi
+      ;;
+    --provider=*)
+      prov="${1#*=}"
+      if [ -x "$PROVIDER_SCRIPT" ]; then
+        eval "$(python3 "$PROVIDER_SCRIPT" env "$prov" 2>/dev/null || true)"
+      fi
+      shift
+      ;;
+    --provider)
+      shift
+      prov="${1:-}"
+      if [ -x "$PROVIDER_SCRIPT" ]; then
+        eval "$(python3 "$PROVIDER_SCRIPT" env "$prov" 2>/dev/null || true)"
+      fi
+      if [ $# -gt 0 ]; then shift; fi
+      ;;
+    --openrouter)
+      if [ -x "$PROVIDER_SCRIPT" ]; then
+        eval "$(python3 "$PROVIDER_SCRIPT" env "openrouter" 2>/dev/null || true)"
+      fi
+      shift
+      ;;
+    --gemini)
+      if [ -x "$PROVIDER_SCRIPT" ]; then
+        eval "$(python3 "$PROVIDER_SCRIPT" env "gemini" 2>/dev/null || true)"
+      fi
+      shift
+      ;;
+    --free)
+      if [ -x "$PROVIDER_SCRIPT" ]; then
+        eval "$(python3 "$PROVIDER_SCRIPT" env "openrouter" 2>/dev/null || true)"
+      fi
+      export ANTHROPIC_MODEL="nvidia/nemotron-3-ultra-550b-a55b:free"
+      shift
+      ;;
+    --api-key=*)
+      export ANTHROPIC_API_KEY="${1#*=}"
+      shift
+      ;;
+    --api-key)
+      shift
+      export ANTHROPIC_API_KEY="${1:-}"
+      if [ $# -gt 0 ]; then shift; fi
+      ;;
+    --account=*)
+      val="${1#*=}"
+      SELECTED_PROFILE=$(echo "$val" | tr '[:upper:]' '[:lower:]')
+      shift
+      ;;
+    --account|-a)
+      shift
+      SELECTED_PROFILE=$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')
+      if [ $# -gt 0 ]; then shift; fi
+      ;;
+    -y|--yes)
+      REMAINING_ARGS+=("--dangerously-skip-permissions")
+      shift
+      ;;
+    -s|--sonnet|--sonnet-5)
+      REMAINING_ARGS+=("--model" "claude-sonnet-5")
+      shift
+      ;;
+    -o|--opus|--opus-5)
+      REMAINING_ARGS+=("--model" "claude-opus-5")
+      shift
+      ;;
+    -h|--haiku|--haiku-4-5)
+      REMAINING_ARGS+=("--model" "claude-haiku-4-5")
+      shift
+      ;;
+    --sonnet-4-5)
+      REMAINING_ARGS+=("--model" "claude-sonnet-4-5")
+      shift
+      ;;
+    --opus-4-5)
+      REMAINING_ARGS+=("--model" "claude-opus-4-5")
+      shift
+      ;;
+    -e|--effort|-r|--reasoning)
+      shift
+      eff_val="${1:-high}"
+      REMAINING_ARGS+=("--effort" "$eff_val")
+      if [ $# -gt 0 ]; then shift; fi
+      ;;
+    --effort=*|--reasoning=*)
+      eff_val="${1#*=}"
+      REMAINING_ARGS+=("--effort" "$eff_val")
+      shift
+      ;;
+    --think-low)
+      REMAINING_ARGS+=("--effort" "low")
+      shift
+      ;;
+    --think-med)
+      REMAINING_ARGS+=("--effort" "medium")
+      shift
+      ;;
+    --think-high)
+      REMAINING_ARGS+=("--effort" "high")
+      shift
+      ;;
+    --think-max)
+      REMAINING_ARGS+=("--effort" "max")
+      shift
+      ;;
+    --think-off)
+      REMAINING_ARGS+=("--thinking" "disabled")
+      shift
+      ;;
+    -t|--turbo|--fast)
+      REMAINING_ARGS+=("--model" "claude-haiku-4-5" "--thinking" "disabled")
+      export CLAUDE_TURBO=1
+      export BASH_MAX_OUTPUT_LENGTH=8000
+      shift
+      ;;
+    -1|-p1|--p1)
+      if [ ${#all[@]} -ge 1 ]; then SELECTED_PROFILE="${all[0]}"; fi
+      shift
+      ;;
+    -2|-p2|--p2)
+      if [ ${#all[@]} -ge 2 ]; then SELECTED_PROFILE="${all[1]}"; fi
+      shift
+      ;;
+    -3|-p3|--p3)
+      if [ ${#all[@]} -ge 3 ]; then SELECTED_PROFILE="${all[2]}"; fi
+      shift
+      ;;
+    -*)
+      stripped="${1#-}"
+      stripped="${stripped#-}"
+      candidate=$(echo "$stripped" | tr '[:upper:]' '[:lower:]')
+      if [ -d "${PROFILES_DIR}/${candidate}" ]; then
+        SELECTED_PROFILE="$candidate"
+        shift
+      else
+        REMAINING_ARGS+=("$1")
+        shift
+      fi
+      ;;
+    *)
+      candidate=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+      if [ -z "$SELECTED_PROFILE" ] && [ -d "${PROFILES_DIR}/${candidate}" ] && [ ${#REMAINING_ARGS[@]} -eq 0 ]; then
+        SELECTED_PROFILE="$candidate"
+        shift
+      else
+        REMAINING_ARGS+=("$1")
+        shift
+      fi
+      ;;
+  esac
+done
+
+if [ -z "$SELECTED_PROFILE" ]; then
+  SELECTED_PROFILE=$(get_active_profile)
+fi
+
+# Ensure profile directory and structure exists
+ensure_profile_structure "$SELECTED_PROFILE" "$(get_profile_mode "$SELECTED_PROFILE")"
+sync_active_to_home "$SELECTED_PROFILE"
+
+# Auto-Login Check: Only if using OAuth and not overridden by ANTHROPIC_API_KEY
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ "$(is_profile_authenticated "$SELECTED_PROFILE")" != "true" ] && [ ${#REMAINING_ARGS[@]} -eq 0 ]; then
+  echo "Profile '$(echo "$SELECTED_PROFILE" | tr '[:lower:]' '[:upper:]')' is not logged in yet."
+  echo "Opening browser to authenticate..."
+  export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/${SELECTED_PROFILE}"
+  export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/${SELECTED_PROFILE}"
+  "$REAL_CLAUDE" auth login
+  sync_active_to_home "$SELECTED_PROFILE"
+  echo "✓ Successfully logged in to $(echo "$SELECTED_PROFILE" | tr '[:lower:]' '[:upper:]')."
+fi
+
+# Export isolated configuration directories
+export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/${SELECTED_PROFILE}"
+export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/${SELECTED_PROFILE}"
+
+# Internal Claude Code Token & Output Optimization
+export COMPACT_CONTEXT_THRESHOLD=100000
+export COMPACT_CONTEXT_INTERVAL=30000
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000
+export BASH_MAX_OUTPUT_LENGTH=20000
+
+# Periodic background storage & token cleanup check (non-blocking, at most once per 24 hours)
+if [ -x "$CLEANUP_SCRIPT" ]; then
+  LAST_CLEANUP="${SHARED_CLAUDE_DIR}/.last-cleanup"
+  NOW=$(date +%s)
+  LAST_TS=0
+  if [ -f "$LAST_CLEANUP" ]; then
+    LAST_TS=$(stat -c %Y "$LAST_CLEANUP" 2>/dev/null || echo 0)
+  fi
+  if [ $((NOW - LAST_TS)) -gt 86400 ]; then
+    "$CLEANUP_SCRIPT" false >/dev/null 2>&1 &
+  fi
+fi
+
+# Informative startup banner when running in interactive terminal without arguments
+if [ -t 0 ] && [ -t 1 ] && [ ${#REMAINING_ARGS[@]} -eq 0 ]; then
+  prov_label="OAuth [$(echo "$SELECTED_PROFILE" | tr '[:lower:]' '[:upper:]')]"
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    prov_label="API Key Mode"
+  fi
+  printf "\033[38;5;39m[Claude Cortex]\033[0m %s | Shortcuts: claude continue • claude palace • claude dream • claude menu • claude docs\n" "$prov_label"
+fi
+
+# If ANTHROPIC_MODEL is set and not explicitly in REMAINING_ARGS, pass it to Claude Code
+if [ -n "${ANTHROPIC_MODEL:-}" ]; then
+  has_model=false
+  for arg in "${REMAINING_ARGS[@]}"; do
+    if [ "$arg" = "--model" ] || [[ "$arg" == --model=* ]]; then
+      has_model=true
+      break
+    fi
+  done
+  if [ "$has_model" = "false" ]; then
+    REMAINING_ARGS+=("--model" "$ANTHROPIC_MODEL")
+  fi
+fi
+
+# Pass through to real binary
+exec "$REAL_CLAUDE" "${REMAINING_ARGS[@]}"

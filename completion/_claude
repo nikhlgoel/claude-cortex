@@ -1,0 +1,120 @@
+#compdef claude
+# ------------------------------------------------------------------------------
+# Claude Cortex - Zsh Completion
+# ------------------------------------------------------------------------------
+
+_claude() {
+    local -a subcommands
+    subcommands=(
+        'continue:Auto-check capacity across all accounts and resume session'
+        'switch:Switch or toggle active default profile'
+        'status:Display real-time account status and quota utilization'
+        'quota:Live limit countdown and capacity overview'
+        'menu:Launch interactive visual command palette'
+        'palace:Inspect project Cognitive Memory Palace'
+        'remember:Store memory into palace room (blueprint, graveyard, etc.)'
+        'recall:Search and recall past lessons from Memory Palace'
+        'provider:Manage API providers (Anthropic, OpenRouter, Gemini)'
+        'reasoning:Set or view thinking effort (low, medium, high, max, off)'
+        'effort:Set or view thinking effort'
+        'clean:Prune stale session files, caches, and dead tokens'
+        'profile:Manage profiles (add, remove, list, switch)'
+        'login:Authenticate a profile in the browser via OAuth'
+        'docs:View comprehensive Cortex user guide'
+        'whoami:Show current active profile and email'
+        'dream:Simulate counterfactual edge-cases and stress-test architecture'
+        'research:Frontier technology research & mathematical simulation'
+        'think:Dialectical Tri-Mind cognitive elevation'
+        'smart:Elevate intelligence with axiomatic reasoning'
+        'turbo:High-speed minimal-token execution'
+        'fast:Quick minimal-token execution'
+    )
+
+    local -a profiles
+    local prof_dir="${HOME}/.claude-profiles"
+    if [ -d "$prof_dir" ]; then
+        for p in "$prof_dir"/*(N/); do
+            local bname="${p:t}"
+            if [[ "$bname" != "." && "$bname" != ".." ]]; then
+                profiles+=("-$bname:Launch with profile $bname")
+                profiles+=("$bname:Target profile $bname")
+            fi
+        done
+    fi
+
+    local -a flags
+    flags=(
+        '-y[Bypass permissions (--dangerously-skip-permissions)]'
+        '--yes[Bypass permissions (--dangerously-skip-permissions)]'
+        '-s[Launch with Claude Sonnet 5]'
+        '--sonnet[Launch with Claude Sonnet 5]'
+        '-o[Launch with Claude Opus 5]'
+        '--opus[Launch with Claude Opus 5]'
+        '-h[Launch with Claude Haiku 4.5]'
+        '--haiku[Launch with Claude Haiku 4.5]'
+        '-e[Set reasoning effort level]'
+        '--effort[Set reasoning effort level]'
+        '-r[Set reasoning effort level]'
+        '--reasoning[Set reasoning effort level]'
+        '--think-low[Light reasoning effort]'
+        '--think-med[Medium reasoning effort]'
+        '--think-high[Deep reasoning effort]'
+        '--think-max[Maximum reasoning effort]'
+        '--think-off[Disable thinking tokens]'
+        '--provider[Select API provider: oauth, anthropic, openrouter, gemini]'
+        '--api-key[Provide direct Anthropic API key]'
+        '-m[Launch interactive visual menu]'
+        '--menu[Launch interactive visual menu]'
+        '-1[Launch profile 1]'
+        '-2[Launch profile 2]'
+        '-3[Launch profile 3]'
+        '--continue[Resume last session in current directory]'
+        '--print[Non-interactive single-turn prompt output]'
+        '--resume[Resume previous session interactively]'
+        '--help[Display help information]'
+        '--version[Display Claude Code version]'
+    )
+
+    if (( CURRENT == 2 )); then
+        _describe -t commands 'subcommands' subcommands -- flags -- profiles
+        return
+    fi
+
+    case "${words[2]}" in
+        switch|login|continue)
+            local -a pnames
+            if [ -d "$prof_dir" ]; then
+                for p in "$prof_dir"/*(N/); do pnames+=("${p:t}"); done
+            fi
+            _describe -t profiles 'profiles' pnames
+            ;;
+        profile|profiles)
+            local -a profile_cmds
+            profile_cmds=(
+                'add:Interactive wizard to create a new profile'
+                'remove:Remove an existing profile'
+                'list:List all configured profiles'
+                'switch:Switch active profile'
+                'status:Display capacity overview'
+            )
+            _describe -t profile_cmds 'profile commands' profile_cmds
+            ;;
+        provider|providers)
+            local -a prov_cmds
+            prov_cmds=('status:View providers' 'set:Switch active provider' 'config:Set key & model' 'env:Print env vars')
+            _describe -t prov_cmds 'provider commands' prov_cmds
+            ;;
+        remember)
+            local -a rooms
+            rooms=('blueprint:Architecture & Schema' 'procedures:Workflows & Commands' 'graveyard:Bugs & Pitfalls' 'decisions:ADRs & Choices' 'working:Current Focus')
+            _describe -t rooms 'palace rooms' rooms
+            ;;
+        reasoning|effort|-e|--effort|-r|--reasoning)
+            local -a levels
+            levels=('low:Quick light thinking' 'medium:Balanced thinking' 'high:Deep reasoning' 'xhigh:Extended reasoning' 'max:Maximum effort' 'off:No thinking tokens')
+            _describe -t levels 'effort levels' levels
+            ;;
+    esac
+}
+
+_claude "$@"
