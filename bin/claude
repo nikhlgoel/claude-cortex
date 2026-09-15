@@ -18,6 +18,9 @@ PALACE_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-palace.py"
 DREAM_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-dream.py"
 RESEARCH_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-research.py"
 COGNITION_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/claude-cognition.py"
+GATEWAY_SCRIPT="${SHARED_CLAUDE_DIR}/scripts/cortex-gateway.py"
+PRETOOL_HOOK="${SHARED_CLAUDE_DIR}/scripts/cortex-pretool-hook.py"
+PROMPT_HOOK="${SHARED_CLAUDE_DIR}/scripts/cortex-prompt-hook.py"
 
 # Locate real Claude Code binary
 REAL_CLAUDE="${HOME}/.local/bin/claude.real"
@@ -790,7 +793,9 @@ print('Valid levels: low, medium, high, xhigh, max, off')
           -t|--turbo|--fast)
             translated_continue_args+=("--model" "claude-haiku-4-5" "--thinking" "disabled")
             export CLAUDE_TURBO=1
-            export BASH_MAX_OUTPUT_LENGTH=8000
+            export CLAUDE_CODE_EFFORT_LEVEL="low"
+            export MAX_THINKING_TOKENS=0
+            export BASH_MAX_OUTPUT_LENGTH=4000
             shift
             ;;
           *) translated_continue_args+=("$1"); shift ;;
@@ -953,7 +958,9 @@ while [ $# -gt 0 ]; do
     -t|--turbo|--fast)
       REMAINING_ARGS+=("--model" "claude-haiku-4-5" "--thinking" "disabled")
       export CLAUDE_TURBO=1
-      export BASH_MAX_OUTPUT_LENGTH=8000
+      export CLAUDE_CODE_EFFORT_LEVEL="low"
+      export MAX_THINKING_TOKENS=0
+      export BASH_MAX_OUTPUT_LENGTH=4000
       shift
       ;;
     -1|-p1|--p1)
@@ -1016,11 +1023,32 @@ fi
 export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/${SELECTED_PROFILE}"
 export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/${SELECTED_PROFILE}"
 
-# Internal Claude Code Token & Output Optimization
-export COMPACT_CONTEXT_THRESHOLD=100000
-export COMPACT_CONTEXT_INTERVAL=30000
-export CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000
-export BASH_MAX_OUTPUT_LENGTH=20000
+# ==============================================================================
+# Claude Cortex: Universal Engine Ceilings & Token Optimization
+# ==============================================================================
+export CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1
+export SLASH_COMMAND_TOOL_CHAR_BUDGET=2000
+export CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS:-8000}"
+export BASH_MAX_OUTPUT_LENGTH="${BASH_MAX_OUTPUT_LENGTH:-6000}"
+export TASK_MAX_OUTPUT_LENGTH="${TASK_MAX_OUTPUT_LENGTH:-8000}"
+export MAX_MCP_OUTPUT_TOKENS="${MAX_MCP_OUTPUT_TOKENS:-4000}"
+export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=0.45
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW=85000
+export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-medium}"
+export MAX_THINKING_TOKENS="${MAX_THINKING_TOKENS:-8192}"
+
+# Anti-Stall Stream Watchdogs (prevents false disconnects on thinking/proxies)
+export CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS=60000
+export CLAUDE_STREAM_IDLE_TIMEOUT_MS=60000
+export API_TIMEOUT_MS=300000
+export CLAUDE_ENABLE_STREAM_WATCHDOG=1
+
+# Zero-Telemetry & Clean Network Policy
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+export DISABLE_GROWTHBOOK=1
+export DISABLE_TELEMETRY=1
+export DO_NOT_TRACK=1
+export DISABLE_ERROR_REPORTING=1
 
 # Periodic background storage & token cleanup check (non-blocking, at most once per 24 hours)
 if [ -x "$CLEANUP_SCRIPT" ]; then

@@ -112,17 +112,17 @@ cp "${SCRIPT_DIR}/scripts/token-opt-clean.sh" "${CLAUDE_DIR}/scripts/token-opt-c
 chmod +x "${CLAUDE_DIR}/scripts/token-opt-clean.sh"
 
 # Copy python cognitive, orchestration, and MCP engines
-for py_script in claude-capacity-check.py claude-palace.py claude-dream.py claude-provider.py claude-models.py gemini-proxy.py claude-research.py claude-cognition.py cortex-mcp.py; do
+for py_script in claude-capacity-check.py claude-palace.py claude-dream.py claude-provider.py claude-models.py gemini-proxy.py claude-research.py claude-cognition.py cortex-mcp.py cortex-gateway.py cortex-pretool-hook.py cortex-prompt-hook.py; do
   if [ -f "${SCRIPT_DIR}/scripts/${py_script}" ]; then
     cp "${SCRIPT_DIR}/scripts/${py_script}" "${CLAUDE_DIR}/scripts/${py_script}"
     chmod +x "${CLAUDE_DIR}/scripts/${py_script}"
     bin_name="${py_script%.py}"
-    if [ "$bin_name" != "gemini-proxy" ]; then
+    if [ "$bin_name" != "gemini-proxy" ] && [ "$bin_name" != "cortex-pretool-hook" ] && [ "$bin_name" != "cortex-prompt-hook" ]; then
       ln -sf "${CLAUDE_DIR}/scripts/${py_script}" "${BIN_DIR}/${bin_name}"
     fi
   fi
 done
-echo "✓ Installed Memory Palace, Dream Simulation, Frontier Research, Models Catalog, and Cortex MCP Engine"
+echo "✓ Installed Memory Palace, Dream Simulation, Frontier Research, Cortex Gateway, and Token Optimization Hooks"
 
 # Merge settings.json cleanly
 if [ -f "${CLAUDE_DIR}/settings.json" ]; then

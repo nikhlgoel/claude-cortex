@@ -5,10 +5,23 @@
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "model": "opus",
-  "effortLevel": "low",
+  "effortLevel": "medium",
   "autoCompactEnabled": true,
-  "autoCompactWindow": 100000,
+  "autoCompactWindow": 85000,
   "cleanupPeriodDays": 7,
-  "bashOutputMaxChars": 20000,
-  "taskOutputMaxChars": 20000
+  "bashOutputMaxChars": 6000,
+  "taskOutputMaxChars": 8000,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "command": "python3 ~/.claude/scripts/cortex-pretool-hook.py"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "command": "python3 ~/.claude/scripts/cortex-prompt-hook.py"
+      }
+    ]
+  }
 }

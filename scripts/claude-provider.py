@@ -84,26 +84,27 @@ def is_proxy_running(port=8088):
     except Exception:
         return False
 
-def start_gemini_proxy(api_key, model="gemini-2.5-pro", port=8088):
+def start_cortex_gateway(port=8088):
     if is_proxy_running(port):
         return True
-    proxy_script = os.path.join(SHARED_CLAUDE_DIR, "scripts", "gemini-proxy.py")
-    if not os.path.exists(proxy_script):
+    gateway_script = os.path.join(SHARED_CLAUDE_DIR, "scripts", "cortex-gateway.py")
+    if not os.path.exists(gateway_script):
+        # Fallback to gemini-proxy if cortex-gateway is not yet installed in shared dir
+        gateway_script = os.path.join(SHARED_CLAUDE_DIR, "scripts", "gemini-proxy.py")
+    if not os.path.exists(gateway_script):
         return False
 
     env = os.environ.copy()
-    env["GEMINI_API_KEY"] = api_key
-    env["GEMINI_MODEL"] = model
-    env["GEMINI_PROXY_PORT"] = str(port)
+    env["CORTEX_GATEWAY_PORT"] = str(port)
 
     subprocess.Popen(
-        [sys.executable, proxy_script],
+        [sys.executable, gateway_script, "--port", str(port)],
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True
     )
-    time.sleep(0.3)
+    time.sleep(0.4)
     return is_proxy_running(port)
 
 def show_status():
@@ -168,16 +169,21 @@ def get_env_for_provider(provider_name=None):
         if model:
             env_vars["ANTHROPIC_MODEL"] = model
     elif target == "openrouter":
-        env_vars["ANTHROPIC_BASE_URL"] = pinfo.get("base_url", "https://openrouter.ai/api/v1")
+        port = pinfo.get("proxy_port", 8088)
+        start_cortex_gateway(port=port)
+        # Route through Cortex Gateway for OT-ACR token optimization & stream keep-alive
+        env_vars["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
         env_vars["ANTHROPIC_API_KEY"] = api_key
+        env_vars["OPENROUTER_API_KEY"] = api_key
         if model:
             env_vars["ANTHROPIC_MODEL"] = model
     elif target == "gemini":
         port = pinfo.get("proxy_port", 8088)
         model = model or "gemini-2.5-pro"
-        start_gemini_proxy(api_key, model=model, port=port)
+        start_cortex_gateway(port=port)
         env_vars["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
         env_vars["ANTHROPIC_API_KEY"] = api_key
+        env_vars["GEMINI_API_KEY"] = api_key
         env_vars["ANTHROPIC_MODEL"] = model
 
     return env_vars
