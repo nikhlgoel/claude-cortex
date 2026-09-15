@@ -1,4 +1,4 @@
-#compdef claude
+#compdef claude cc
 # ------------------------------------------------------------------------------
 # Claude Cortex - Zsh Completion
 # ------------------------------------------------------------------------------
@@ -8,6 +8,8 @@ _claude() {
     subcommands=(
         'continue:Auto-check capacity across all accounts and resume session'
         'switch:Switch or toggle active default profile'
+        'model:Interactive model explorer, benchmarks & instant switcher'
+        'update:Multi-component updater (CLI, VS Code, UV tools, Cortex repo)'
         'status:Display real-time account status and quota utilization'
         'quota:Live limit countdown and capacity overview'
         'menu:Launch interactive visual command palette'

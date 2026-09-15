@@ -34,7 +34,8 @@ DOMAIN_KEYWORDS = {
 
 COMMAND_KEYWORDS = (
     "model", "provider", "effort", "reasoning", "turbo",
-    "capacity", "quota", "palace", "dream", "cortex", "docs", "menu", "update"
+    "capacity", "quota", "palace", "dream", "cortex", "docs", "menu", "update",
+    "switch", "continue"
 )
 
 def update_session_effort(level):
@@ -151,6 +152,21 @@ def execute_in_session_command(tokens):
         script = os.path.join(SCRIPTS_DIR, "claude-update.py")
         res = subprocess.run([sys.executable, script] + sub_args, capture_output=True, text=True)
         return res.stdout or res.stderr
+
+    elif cmd == "switch":
+        target = sub_args[0] if sub_args else ""
+        capacity_script = os.path.join(SCRIPTS_DIR, "claude-capacity-check.py")
+        if target:
+            res = subprocess.run([sys.executable, capacity_script, "--switch", target], capture_output=True, text=True)
+            return (res.stdout or res.stderr) + "\n💡 Note: Type /exit (or Ctrl+C) and run 'cc continue' in your terminal to resume under the switched profile."
+        else:
+            res = subprocess.run([sys.executable, capacity_script], capture_output=True, text=True)
+            return res.stdout or res.stderr
+
+    elif cmd == "continue":
+        capacity_script = os.path.join(SCRIPTS_DIR, "claude-capacity-check.py")
+        res = subprocess.run([sys.executable, capacity_script], capture_output=True, text=True)
+        return (res.stdout or res.stderr) + "\n💡 Auto-Failover: To switch accounts and resume with full context, type /exit (or Ctrl+C) and run 'cc continue' in your terminal."
 
     elif cmd in ("cortex", "cc", "help"):
         return (

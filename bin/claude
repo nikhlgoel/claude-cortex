@@ -989,6 +989,10 @@ while [ $# -gt 0 ]; do
       if [ ${#all[@]} -ge 3 ]; then SELECTED_PROFILE="${all[2]}"; fi
       shift
       ;;
+    -p|--print|-v|--version|-h|--help)
+      REMAINING_ARGS+=("$1")
+      shift
+      ;;
     -*)
       stripped="${1#-}"
       stripped="${stripped#-}"

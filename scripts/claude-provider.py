@@ -71,8 +71,14 @@ def load_providers():
 
 def save_providers(data):
     os.makedirs(os.path.dirname(PROVIDERS_FILE), exist_ok=True)
-    with open(PROVIDERS_FILE, "w") as f:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(PROVIDERS_FILE, flags, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
+    try:
+        os.chmod(PROVIDERS_FILE, 0o600)
+    except Exception:
+        pass
 
 def is_proxy_running(port=8088):
     import socket

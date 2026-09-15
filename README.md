@@ -1,16 +1,19 @@
-# Claude Cortex 🚀
+# Claude Cortex (`cc`) 🚀
 ### Multi-Account Manager, Cognitive Memory Palace, Dream Simulation, Autonomous Rate-Limit Failover & API Proxy Suite
 
-A unified, production-grade toolkit for **Claude Code** in terminal that unlocks:
-- **Dual & Multi-Account Management**: Run `claude -ws` and `claude -vl` simultaneously or switch with `claude switch ws`.
-- **Autonomous Capacity-Aware Failover**: When accounts hit rate limits, `claude continue` automatically scans all configured accounts, detects exact reset countdowns, finds an account with remaining capacity, switches to it, and resumes your session with zero context loss!
+A unified, production-grade toolkit for **Claude Code** that unlocks:
+- **Ultra-Fast `cc` Command Prefix**: Universal shorthand for all commands (`cc`, `cc continue`, `cc model`, `cc update`, `cc palace`, `cc effort`).
+- **Dual & Multi-Account Management**: Run `cc -ws` and `cc -vl` simultaneously or switch with `cc switch ws`.
+- **Autonomous Capacity-Aware Failover**: When accounts hit rate limits, `cc continue` automatically scans all configured accounts, detects exact reset countdowns, finds an account with remaining capacity, switches to it, and resumes your session with zero context loss!
+- **Unified Ecosystem Updater (`cc update`)**: Single-command updater that tracks and updates Claude Code CLI, the VS Code extension (`anthropic.claude-code`), connected UV tools (`specify-cli`, `scrapling`), and the Claude Cortex repository.
+- **6-Pillar Advanced Token Conservation Protocol**: Prompt cache stabilization (90%+ cache hits), surgical line-bounded file views, terminal noise filtering, lossless PreCompact memory anchoring, and zero-fluff dense signal protocol.
+- **Interactive TUI Model Selector with Full Mouse & Keyboard Control**: Browse models, scroll with mouse wheel, click to select, view comprehensive token pricing matrices ($/1M input/output, cache hit rates, 100-turn session cost estimates), and benchmarks (`cc model`).
 - **Cognitive Memory Palace v2.0**: Neuroscience-grounded long-term memory with inverted tag indexing, room-based storage (`blueprint`, `procedures`, `graveyard`, `decisions`, `working`), and autonomous recall before tasks.
-- **Cognitive Dream Simulation Engine**: Replicates REM Sleep / Default Mode Network. Simulates counterfactual worst-case scenarios and stress tests across 4 chambers: Technical/Security, Business/Economics, Psychological/UX, and Creative leaps (`claude dream` / `/dream`).
-- **Latest Model Shortcuts & Reasoning Control**: Native aliases pointing to `claude-sonnet-5` (`-s`), `claude-opus-5` (`-o`), `claude-haiku-4-5` (`-h`) and explicit thinking effort controls (`--effort <low|medium|high|max>`, `/reasoning <level>`).
+- **Cognitive Dream Simulation Engine**: Replicates REM Sleep / Default Mode Network. Simulates counterfactual worst-case scenarios and stress tests across 4 chambers: Technical/Security, Business/Economics, Psychological/UX, and Creative leaps (`cc dream` / `/dream`).
+- **Latest Model Shortcuts & Reasoning Control**: Native aliases pointing to `claude-sonnet-5` (`-s`), `claude-opus-5` (`-o`), `claude-haiku-4-5` (`-h`) and explicit thinking effort controls (`--effort <low|medium|high|max>`, `cc effort <level>`).
 - **Live Pairing & Discussion Mode**: Interactive co-pilot workflow (`/pair`, `/discuss`) that halts at architectural inflection points, debates trade-offs, auto-starts approved plans, and proactively prompts for follow-up amendments.
 - **External API Providers & Fallback Proxy**: When subscriptions expire, seamlessly continue via Anthropic API, OpenRouter.ai, or Google Gemini AI Studio with streaming translation (`gemini-proxy.py`).
-- **Universal Safe Pre-Install Backup**: Automatically archives all existing user configurations and profiles into timestamped archives (`~/.claude-backups/`) with zero data loss before clean reinstallation.
-- **Tab Autocompletion & Interactive Menu**: Autocompletes commands, profiles, models, and flags in Bash/Zsh; includes an interactive visual menu (`claude menu`).
+- **Tab Autocompletion & Interactive Menu**: Autocompletes commands, profiles, models, and flags in Bash/Zsh; includes an interactive visual menu (`cc menu`).
 
 ---
 
