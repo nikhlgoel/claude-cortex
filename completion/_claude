@@ -10,6 +10,7 @@ _claude() {
         'switch:Switch or toggle active default profile'
         'model:Interactive model explorer, benchmarks & instant switcher'
         'update:Multi-component updater (CLI, VS Code, UV tools, Cortex repo)'
+        'test:Execute comprehensive test suite & generate metrics dossier'
         'status:Display real-time account status and quota utilization'
         'quota:Live limit countdown and capacity overview'
         'menu:Launch interactive visual command palette'

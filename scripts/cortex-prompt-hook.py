@@ -35,7 +35,7 @@ DOMAIN_KEYWORDS = {
 COMMAND_KEYWORDS = (
     "model", "provider", "effort", "reasoning", "turbo",
     "capacity", "quota", "palace", "dream", "cortex", "docs", "menu", "update",
-    "switch", "continue"
+    "switch", "continue", "test", "bench"
 )
 
 def update_session_effort(level):
@@ -168,6 +168,15 @@ def execute_in_session_command(tokens):
         res = subprocess.run([sys.executable, capacity_script], capture_output=True, text=True)
         return (res.stdout or res.stderr) + "\n💡 Auto-Failover: To switch accounts and resume with full context, type /exit (or Ctrl+C) and run 'cc continue' in your terminal."
 
+    elif cmd in ("test", "bench", "tests"):
+        test_script = os.path.join(SHARED_DIR, "tests", "run_all_tests.py")
+        if not os.path.exists(test_script):
+            test_script = os.path.join(os.path.dirname(SCRIPTS_DIR), "tests", "run_all_tests.py")
+        if os.path.exists(test_script):
+            res = subprocess.run([sys.executable, test_script], capture_output=True, text=True)
+            return res.stdout or res.stderr
+        return "Test runner not found."
+
     elif cmd in ("cortex", "cc", "help"):
         return (
             "======================================================================\n"
@@ -182,6 +191,7 @@ def execute_in_session_command(tokens):
             "  cc palace [status|recall <q>]              Memory Palace lookup\n"
             "  cc dream                                   Dream simulator engine\n"
             "  cc update [check|apply]                    Unified ecosystem updater\n"
+            "  cc test                                    Run comprehensive test suite\n"
             "======================================================================\n"
         )
 

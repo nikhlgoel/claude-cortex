@@ -212,6 +212,7 @@ show_status() {
   echo "  cc -t / --turbo        High-speed output with minimal token consumption"
   echo "  cc model [list|free]   Model explorer, benchmarks & instant model switcher"
   echo "  cc update              Multi-component updater (CLI, VS Code, UV tools, Cortex repo)"
+  echo "  cc test                Run comprehensive test suite & generate metrics report"
   echo "  cc research [topic]    Frontier tech research & mathematical simulation testbench"
   echo "  cc think [prompt]      Axiomatic Tri-Mind reasoning to break complexity walls"
   echo "  cc switch [profile]    Toggle or switch active default profile"
@@ -328,12 +329,13 @@ interactive_menu() {
   echo -e "\033[1;36m│\033[0m    \033[1;33m[S]\033[0m Switch Active Account Profile                                    \033[1;36m│\033[0m"
   echo -e "\033[1;36m│\033[0m    \033[1;33m[Q]\033[0m Quota & Rate-Limit Capacity Check (5h & 7d window visual bars)   \033[1;36m│\033[0m"
   echo -e "\033[1;36m│\033[0m    \033[1;33m[U]\033[0m Update Ecosystem (Claude Code, Extension, UV Tools, Cortex)      \033[1;36m│\033[0m"
+  echo -e "\033[1;36m│\033[0m    \033[1;33m[B]\033[0m Run Test Suite & Benchmarks (Token Conservation & Speed Metrics)  \033[1;36m│\033[0m"
   echo -e "\033[1;36m│\033[0m    \033[1;33m[V]\033[0m Manage External API Providers (Anthropic, OpenRouter, Gemini)    \033[1;36m│\033[0m"
   echo -e "\033[1;36m│\033[0m    \033[1;33m[A]\033[0m Add New Profile Wizard                                           \033[1;36m│\033[0m"
   echo -e "\033[1;36m│\033[0m    \033[1;33m[D]\033[0m View Comprehensive Documentation                                 \033[1;36m│\033[0m"
   echo -e "\033[1;36m│\033[0m    \033[1;31m[X]\033[0m Exit                                                             \033[1;36m│\033[0m"
   echo -e "\033[1;36m└────────────────────────────────────────────────────────────────────────┘\033[0m"
-  echo -en "\033[1;37mSelect option [1/2/T/M/E/P/R/S/Q/U/V/A/D/X] (Default: 1):\033[0m "
+  echo -en "\033[1;37mSelect option [1/2/T/M/E/P/R/S/Q/U/B/V/A/D/X] (Default: 1):\033[0m "
 
   local menu_choice=""
   if [ -t 0 ]; then
@@ -383,6 +385,7 @@ interactive_menu() {
       ;;
     q|Q|4) exec "$0" status ;;
     u|U) exec "$0" update ;;
+    b|B) exec "$0" test ;;
     v|V|6)
       if [ -x "$PROVIDER_SCRIPT" ]; then python3 "$PROVIDER_SCRIPT" status; else exec "$0" provider; fi
       ;;
@@ -590,6 +593,19 @@ if [ $# -gt 0 ]; then
         exec python3 "${SCRIPT_DIR}/scripts/claude-update.py" "$@"
       fi
       exit 0
+      ;;
+    test|tests|bench|benchmark)
+      shift
+      TEST_RUNNER="${SHARED_CLAUDE_DIR}/tests/run_all_tests.py"
+      if [ ! -f "$TEST_RUNNER" ]; then
+        TEST_RUNNER="${SCRIPT_DIR}/tests/run_all_tests.py"
+      fi
+      if [ -f "$TEST_RUNNER" ]; then
+        exec python3 "$TEST_RUNNER" "$@"
+      else
+        echo "Test runner not found at ${TEST_RUNNER}" >&2
+        exit 1
+      fi
       ;;
     desktop|gui)
       shift

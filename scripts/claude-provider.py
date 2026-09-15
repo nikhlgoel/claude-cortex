@@ -80,6 +80,22 @@ def save_providers(data):
     except Exception:
         pass
 
+# Programmatic API & Testing Aliases
+load_config = load_providers
+save_config = save_providers
+
+def get_active_provider():
+    cfg = load_providers()
+    return cfg.get("active_provider", "oauth")
+
+def set_active_provider(provider_name):
+    cfg = load_providers()
+    if provider_name in cfg.get("providers", {}):
+        cfg["active_provider"] = provider_name
+        save_providers(cfg)
+        return True
+    return False
+
 def is_proxy_running(port=8088):
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

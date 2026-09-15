@@ -362,6 +362,7 @@ def recall(palace_dir, query, room=None, auto_mode=False, max_results=3):
         results.append({
             "id": mid,
             "room": rinfo.get("name", room_key),
+            "room_key": room_key,
             "icon": rinfo.get("icon", "📝"),
             "title": mdata.get("title"),
             "tags": mdata.get("tags", []),
