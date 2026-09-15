@@ -110,6 +110,10 @@ def check_profile(prof_name):
         "tier": tier,
         "available": False,
         "utilization": 0,
+        "five_hour_util": 0,
+        "five_hour_resets_at": None,
+        "seven_day_util": 0,
+        "seven_day_resets_at": None,
         "status_detail": "",
         "resets_at": None,
         "reset_seconds": None,
@@ -227,6 +231,11 @@ def check_profile(prof_name):
                 blocked = True
                 block_reason = f"{lim.get('kind', 'limit')} active"
 
+    info["five_hour_util"] = fh_util
+    info["five_hour_resets_at"] = fh_reset_dt.isoformat() if fh_reset_dt else None
+    info["seven_day_util"] = sd_util
+    info["seven_day_resets_at"] = sd_reset_dt.isoformat() if sd_reset_dt else None
+
     if blocked:
         info["available"] = False
         info["utilization"] = max_util
@@ -246,6 +255,25 @@ def check_profile(prof_name):
         info["score"] = max_util
 
     return info
+
+def render_bar(percent, width=10, use_color=True):
+    """Renders a visually aligned Unicode block progress bar with color coding."""
+    if percent is None:
+        percent = 0
+    p = max(0, min(100, int(percent)))
+    filled = int(round(width * p / 100.0))
+    empty = width - filled
+    bar = "█" * filled + "░" * empty
+    raw_str = f"[{bar}] {p:>3}%"
+    if not use_color:
+        return raw_str
+    if p >= 80:
+        c = "\033[1;31m"  # Red
+    elif p >= 50:
+        c = "\033[1;33m"  # Yellow
+    else:
+        c = "\033[1;32m"  # Green
+    return f"{c}{raw_str}\033[0m"
 
 def get_all_profiles():
     if not os.path.exists(PROFILES_DIR):
@@ -346,26 +374,33 @@ def main():
         return
 
     # Default: Pretty display
-    print("======================================================================")
-    print("             Claude Code Multi-Account Capacity & Quota")
-    print("======================================================================")
+    use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    print("=========================================================================================================")
+    print("                              Claude Code Multi-Account Capacity & Quota")
+    print("=========================================================================================================")
     print(f"Active Default Profile: {current.upper()}")
     print("")
-    print(f"  {'PROFILE':<12} {'EMAIL':<28} {'SUBSCRIPTION':<14} {'STATUS / CAPACITY'}")
-    print(f"  {'-'*12} {'-'*28} {'-'*14} {'-'*20}")
+    print(f"  {'PROFILE':<8}  {'EMAIL':<26}  {'PLAN':<10}  {'5h QUOTA (100%)':<17}  {'7d QUOTA (100%)':<17}  {'STATUS'}")
+    print(f"  {'-'*8}  {'-'*26}  {'-'*10}  {'-'*17}  {'-'*17}  {'-'*24}")
 
     for r in results:
         active_marker = " <-- ACTIVE" if r["name"] == current else ""
         avail_icon = "✓" if r["available"] else "✗"
+        if r["authenticated"]:
+            bar_5h = render_bar(r["five_hour_util"], width=10, use_color=use_color)
+            bar_7d = render_bar(r["seven_day_util"], width=10, use_color=use_color)
+        else:
+            bar_5h = "[N/A]            "
+            bar_7d = "[N/A]            "
         status_line = f"[{avail_icon}] {r['status_detail']}{active_marker}"
-        print(f"  {r['name'].upper():<12} {r['email'] or '[No Email]':<28} {r['subscription'].upper():<14} {status_line}")
+        print(f"  {r['name'].upper():<8}  {r['email'] or '[No Email]':<26}  {r['subscription'].upper():<10}  {bar_5h}  {bar_7d}  {status_line}")
 
     print("")
     if best_profile and best_profile != current:
         best_info = next((x for x in results if x["name"] == best_profile), None)
         if best_info and best_info["available"]:
             print(f"💡 Recommended: Switch to [{best_profile.upper()}] ({best_info['email']}) which has capacity!")
-            print(f"   Command: claude continue   OR   claude switch {best_profile}")
+            print(f"   Command: cc continue   OR   cc switch {best_profile}")
         else:
             print("⚠️  All accounts currently have usage limits reached.")
             print(f"   Next account to reset: [{best_profile.upper()}] - {best_info['status_detail'] if best_info else ''}")
@@ -375,7 +410,7 @@ def main():
             print(f"✓ Current account [{current.upper()}] is healthy and has remaining capacity.")
         else:
             print("⚠️  Active account has limits reached, and no other accounts currently have free capacity.")
-    print("======================================================================")
+    print("=========================================================================================================")
 
 if __name__ == "__main__":
     main()

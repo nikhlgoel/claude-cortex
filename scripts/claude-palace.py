@@ -429,26 +429,63 @@ def show_status(palace_dir):
     print(f"Total Memories:     {idx['stats'].get('total_memories', 0)}")
     print(f"Indexed Tags:       {idx['stats'].get('total_tags', 0)}")
     print(f"Last Consolidated:  {idx.get('last_consolidated', 'N/A')[:19]}")
-    print("")
-    print("Cognitive Rooms:")
-    for rkey, rinfo in ROOMS.items():
+    print("----------------------------------------------------------------------")
+    print("Cognitive Memory Hierarchy:")
+
+    room_mems = {}
+    for mid, mdata in idx.get("memories", {}).items():
+        rk = mdata.get("room", "blueprint")
+        room_mems.setdefault(rk, []).append(mdata)
+
+    room_items = list(ROOMS.items())
+    for idx_r, (rkey, rinfo) in enumerate(room_items):
+        is_last_room = (idx_r == len(room_items) - 1)
+        r_prefix = "└── " if is_last_room else "├── "
+        child_indent = "    " if is_last_room else "│   "
+
         rmeta = idx["rooms"].get(rkey, {})
         rpath = os.path.join(palace_dir, "rooms", rinfo["file"])
         line_count = 0
         if os.path.exists(rpath):
             with open(rpath) as f:
                 line_count = len(f.readlines())
-        tags_str = ", ".join(rmeta.get("tags", [])[:6])
-        if len(rmeta.get("tags", [])) > 6:
-            tags_str += f" (+{len(rmeta.get('tags')) - 6} more)"
-        print(f"  {rinfo['icon']} {rinfo['name'].upper():<28} [{line_count} lines, {rmeta.get('entries_count', 0)} memories]")
-        print(f"     Tags:    {tags_str or 'None'}")
-        print(f"     Purpose: {rinfo['desc']}")
+
+        mems_in_room = room_mems.get(rkey, [])
+        tags_set = set()
+        for m in mems_in_room:
+            tags_set.update(m.get("tags", []))
+        tags_str = " ".join(f"#{t}" for t in sorted(list(tags_set))[:5])
+        if len(tags_set) > 5:
+            tags_str += f" (+{len(tags_set)-5} more)"
+
+        print(f"  {r_prefix}{rinfo['icon']} {rinfo['name'].upper()} ({rinfo['file']})")
+        print(f"  {child_indent}├── Purpose: {rinfo['desc']}")
+        print(f"  {child_indent}├── Metrics: {len(mems_in_room)} memories, {line_count} markdown lines")
+        if tags_str:
+            print(f"  {child_indent}├── Tags:    {tags_str}")
+
+        if mems_in_room:
+            sorted_mems = sorted(mems_in_room, key=lambda x: x.get("created_at", ""), reverse=True)
+            print(f"  {child_indent}└── Recent Entries:")
+            for m_idx, m in enumerate(sorted_mems[:3]):
+                is_last_m = (m_idx == min(3, len(sorted_mems)) - 1) and (len(sorted_mems) <= 3)
+                m_bullet = "└── " if is_last_m else "├── "
+                m_date = m.get("created_at", "")[:10]
+                print(f"  {child_indent}    {m_bullet}[{m.get('id', 'N/A')}] {m.get('title', '')} ({m_date})")
+            if len(sorted_mems) > 3:
+                print(f"  {child_indent}    └── ... (+{len(sorted_mems) - 3} older entries)")
+        else:
+            print(f"  {child_indent}└── No active memories recorded yet")
+
+        if not is_last_room:
+            print(f"  │")
+
     print("======================================================================")
 
 def main():
     parser = argparse.ArgumentParser(description="Cognitive Memory Palace Engine v2.5")
-    parser.add_argument("action", nargs="?", default="status", choices=["status", "init", "remember", "recall", "search", "auto-recall", "prune", "consolidate"])
+    parser.add_argument("action", nargs="?", default="status",
+                        choices=["status", "map", "tree", "init", "remember", "recall", "search", "auto-recall", "prune", "consolidate"])
     parser.add_argument("--room", "-r", help="Target room (blueprint, procedures, graveyard, decisions, working)")
     parser.add_argument("--title", "-t", help="Memory entry title")
     parser.add_argument("--content", "-c", help="Memory body content")
@@ -463,7 +500,7 @@ def main():
     if args.action == "init":
         ensure_palace_structure(palace_dir)
         print(f"✓ Memory Palace initialized at: {palace_dir}")
-    elif args.action == "status":
+    elif args.action in ["status", "map", "tree"]:
         show_status(palace_dir)
     elif args.action == "remember":
         room = args.room
@@ -491,7 +528,7 @@ def main():
                 content = " ".join(unknown[1:])
 
         if not room or not content:
-            print("Usage: claude-palace remember <room> <notes> OR claude-palace remember --room <room> --title <title> --content <content> [--tags <tags>]")
+            print("Usage: cc palace remember <room> <notes> OR cc palace remember --room <room> --title <title> --content <content> [--tags <tags>]")
             sys.exit(1)
         if not title:
             title = content.splitlines()[0][:60]
@@ -501,13 +538,13 @@ def main():
         if not q:
             if args.action == "auto-recall":
                 sys.exit(0)
-            print("Usage: claude-palace recall [--room <room>] <query>")
+            print("Usage: cc palace recall [--room <room>] <query>")
             sys.exit(1)
         recall(palace_dir, q, room=args.room, auto_mode=(args.action == "auto-recall"))
     elif args.action == "prune":
         mem_id = args.id or (unknown[0] if unknown else None)
         if not mem_id:
-            print("Usage: claude-palace prune --id <memory_id>")
+            print("Usage: cc palace prune --id <memory_id>")
             sys.exit(1)
         prune(palace_dir, mem_id=mem_id)
     elif args.action == "consolidate":

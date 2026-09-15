@@ -476,10 +476,10 @@ def set_model(model_id, provider_name=None):
 # ==============================================================================
 # UNBUFFERED POSIX RAW INPUT ENGINE WITH SGR MOUSE TRACKING
 # ==============================================================================
-def get_key():
+def get_key(search_mode=False):
     """
     Reads keypress or escape sequence cross-platform using unbuffered OS read.
-    Eliminates TextIOWrapper chunk-buffering bugs and supports full SGR mouse events.
+    Supports search mode for literal character typing, arrow navigation, and SGR mouse events.
     """
     if sys.platform == "win32":
         import msvcrt
@@ -495,10 +495,13 @@ def get_key():
             return "SPECIAL"
         if ch == b"\x1b": return "ESC"
         if ch in [b"\r", b"\n"]: return "ENTER"
-        if ch == b"\t": return "INSPECT"
-        if ch in [b" ", b"i", b"I"]: return "INSPECT"
-        if ch in [b"f", b"F"]: return "TOGGLE_FREE"
-        if ch in [b"q", b"Q"]: return "QUIT"
+        if ch in [b"\x08", b"\x7f"]: return "BACKSPACE"
+        if not search_mode:
+            if ch == b"/": return "SEARCH"
+            if ch == b"\t": return "INSPECT"
+            if ch in [b" ", b"i", b"I"]: return "INSPECT"
+            if ch in [b"f", b"F"]: return "TOGGLE_FREE"
+            if ch in [b"q", b"Q"]: return "QUIT"
         return ch.decode("utf-8", errors="ignore")
 
     # POSIX (Linux / macOS)
@@ -548,15 +551,19 @@ def get_key():
 
         if seq == b"\x1b": return "ESC"
         if seq in (b"\r", b"\n"): return "ENTER"
-        if seq == b"\t": return "INSPECT"
-        if seq in (b" ", b"i", b"I"): return "INSPECT"
-        if seq in (b"j", b"J"): return "DOWN"
-        if seq in (b"k", b"K"): return "UP"
-        if seq in (b"l", b"L"): return "INSPECT"
-        if seq in (b"h", b"H"): return "LEFT"
-        if seq in (b"f", b"F"): return "TOGGLE_FREE"
-        if seq in (b"q", b"Q"): return "QUIT"
+        if seq in (b"\x7f", b"\x08"): return "BACKSPACE"
         if seq == b"\x03": return "QUIT"  # Ctrl + C
+
+        if not search_mode:
+            if seq == b"/": return "SEARCH"
+            if seq == b"\t": return "INSPECT"
+            if seq in (b" ", b"i", b"I"): return "INSPECT"
+            if seq in (b"j", b"J"): return "DOWN"
+            if seq in (b"k", b"K"): return "UP"
+            if seq in (b"l", b"L"): return "INSPECT"
+            if seq in (b"h", b"H"): return "LEFT"
+            if seq in (b"f", b"F"): return "TOGGLE_FREE"
+            if seq in (b"q", b"Q"): return "QUIT"
 
         return seq.decode("utf-8", errors="ignore")
     finally:
@@ -668,6 +675,9 @@ def interactive_tui(initial_free_only=False):
 
     cursor = 0
     in_dossier = False
+    search_mode = False
+    search_query = ""
+    scroll_offset = 0
 
     for idx, m in enumerate(all_models):
         if m["id"] == cur_model:
@@ -680,23 +690,33 @@ def interactive_tui(initial_free_only=False):
 
     try:
         while True:
+            # 1. Apply Tier & Search Filters
             if free_only:
-                models = [m for m in all_models if "FREE" in m.get("tier", "").upper()]
+                filtered_models = [m for m in all_models if "FREE" in m.get("tier", "").upper()]
             else:
-                models = all_models
+                filtered_models = list(all_models)
+
+            if search_query.strip():
+                sq = search_query.strip().lower()
+                models = [
+                    m for m in filtered_models
+                    if sq in m["id"].lower() or sq in m.get("name", "").lower() or sq in m.get("best_for", "").lower()
+                ]
+            else:
+                models = filtered_models
 
             if not models:
-                models = all_models
-                free_only = False
+                cursor = 0
+                selected_m = None
+            else:
+                if cursor >= len(models):
+                    cursor = max(0, len(models) - 1)
+                selected_m = models[cursor]
 
-            if cursor >= len(models):
-                cursor = max(0, len(models) - 1)
-
-            selected_m = models[cursor]
-
-            if in_dossier:
+            # 2. Dossier Modal View
+            if in_dossier and selected_m:
                 render_dossier_modal(selected_m, current_index=cursor + 1, total_count=len(models))
-                key = get_key()
+                key = get_key(search_mode=False)
                 if key in ["UP", "LEFT", "SCROLL_UP"]:
                     cursor = (cursor - 1) % len(models)
                     continue
@@ -711,68 +731,134 @@ def interactive_tui(initial_free_only=False):
                     set_model(selected_m["id"], prov)
                     return
                 elif isinstance(key, tuple) and key[0] == "MOUSE_CLICK":
-                    # Clicking anywhere in footer area closes or selects
                     row = key[2]
                     if row >= 22:
                         in_dossier = False
                     continue
                 continue
 
-            # Render Main TUI Table
+            # 3. Dynamic Terminal Size & Pagination Calculations
+            try:
+                term_cols, term_rows = os.get_terminal_size()
+            except Exception:
+                term_cols, term_rows = 100, 24
+
+            max_display = max(4, min(14, term_rows - 12))
+
+            if cursor < scroll_offset:
+                scroll_offset = cursor
+            elif cursor >= scroll_offset + max_display:
+                scroll_offset = cursor - max_display + 1
+
+            displayed_models = models[scroll_offset : scroll_offset + max_display] if models else []
+
+            # 4. Render Main TUI Table
             sys.stdout.write("\033[2J\033[H")
             sys.stdout.write("\033[1;36m" + "=" * 96 + "\n" + "\033[0m")
             mode_tag = "\033[1;32m[100% FREE MODELS ONLY]\033[0m" if free_only else "[ALL MODELS]"
-            sys.stdout.write(f"  \033[1;37m⚡ CLAUDE CORTEX - INTERACTIVE MODEL EXPLORER\033[0m | Provider: \033[1;33m{prov.upper()}\033[0m {mode_tag}\n")
+            page_tag = f"\033[1;30m({cursor + 1}/{len(models)})\033[0m" if models else "\033[1;31m(0 matches)\033[0m"
+            filter_tag = f" \033[1;33m[Filter: '{search_query}']\033[0m" if search_query else ""
+            sys.stdout.write(f"  \033[1;37m⚡ CLAUDE CORTEX - INTERACTIVE MODEL EXPLORER\033[0m | Prov: \033[1;33m{prov.upper()}\033[0m {mode_tag}{filter_tag} {page_tag}\n")
             sys.stdout.write("\033[1;36m" + "=" * 96 + "\n" + "\033[0m")
-            sys.stdout.write("  \033[1;30mNav:\033[0m [↑/↓/Mouse] Browse  •  \033[1;32m[Enter/Click]\033[0m Select  •  \033[1;33m[Shift/Tab/i]\033[0m Inspect  •  \033[1;36m[f]\033[0m Free  •  \033[1;31m[Esc]\033[0m Exit\n")
+
+            if search_mode:
+                sys.stdout.write(f"  \033[1;33m🔍 Search:\033[0m \033[1;37m{search_query}\033[5m_\033[0m  \033[1;30m(Type to filter, [Enter/↓] Accept, [Esc] Clear)\033[0m\n")
+            else:
+                sys.stdout.write("  \033[1;30mNav:\033[0m [↑/↓/Mouse] Browse  •  \033[1;32m[Enter/Click]\033[0m Select  •  \033[1;33m[Shift/Tab/i]\033[0m Inspect  •  \033[1;35m[/]\033[0m Search  •  \033[1;36m[f]\033[0m Free  •  \033[1;31m[Esc]\033[0m Exit\n")
+
             sys.stdout.write("\033[1;36m" + "─" * 96 + "\n" + "\033[0m")
             sys.stdout.write(f"  {'':<2} {'TIER':<8} {'MODEL ID':<42} {'CONTEXT':<8} {'CODE':<7} {'REAS':<7} {'SPEED'}\n")
             sys.stdout.write("\033[1;36m" + "─" * 96 + "\n" + "\033[0m")
 
             table_start_row = 7
 
-            for i, m in enumerate(models):
-                is_cur = (m["id"] == cur_model)
-                is_selected = (i == cursor)
-                tier = m.get("tier", "PAID")
-                tier_str = "\033[1;32m[FREE]\033[0m" if "FREE" in tier else "\033[1;33m[PAID]\033[0m"
-                if tier == "SUBSCRIPTION": tier_str = "\033[1;36m[SUB]\033[0m"
+            if scroll_offset > 0:
+                sys.stdout.write(f"   \033[1;30m▲ (+{scroll_offset} more models above)\033[0m\n")
+                table_start_row += 1
 
-                bm = m.get("benchmarks", {})
-                code_score = bm.get("coding", "-")[:6]
-                reas_score = bm.get("reasoning", "-")[:6]
-                speed = bm.get("speed", "Fast")[:9]
-                ctx = m.get("context", "128k")[:8]
+            if not displayed_models:
+                sys.stdout.write("\n     \033[1;31mNo models found matching your query.\033[0m Press [Backspace] or [Esc] to reset filter.\n\n")
+            else:
+                for rel_idx, m in enumerate(displayed_models):
+                    i = scroll_offset + rel_idx
+                    is_cur = (m["id"] == cur_model)
+                    is_selected = (i == cursor)
+                    tier = m.get("tier", "PAID")
+                    tier_str = "\033[1;32m[FREE]\033[0m" if "FREE" in tier else "\033[1;33m[PAID]\033[0m"
+                    if tier == "SUBSCRIPTION": tier_str = "\033[1;36m[SUB]\033[0m"
 
-                cur_tag = " \033[1;34m(CURRENT)\033[0m" if is_cur else ""
+                    bm = m.get("benchmarks", {})
+                    code_score = bm.get("coding", "-")[:6]
+                    reas_score = bm.get("reasoning", "-")[:6]
+                    speed = bm.get("speed", "Fast")[:9]
+                    ctx = m.get("context", "128k")[:8]
 
-                if is_selected:
-                    line = f"\033[1;44;37m > {tier_str:<16} {m['id']:<42} {ctx:<8} {code_score:<7} {reas_score:<7} {speed:<9}{cur_tag}\033[0m"
-                else:
-                    line = f"   {tier_str:<16} {m['id']:<42} {ctx:<8} {code_score:<7} {reas_score:<7} {speed:<9}{cur_tag}"
+                    cur_tag = " \033[1;34m(CURRENT)\033[0m" if is_cur else ""
 
-                sys.stdout.write(line + "\n")
+                    if is_selected:
+                        line = f"\033[1;44;37m > {tier_str:<16} {m['id']:<42} {ctx:<8} {code_score:<7} {reas_score:<7} {speed:<9}{cur_tag}\033[0m"
+                    else:
+                        line = f"   {tier_str:<16} {m['id']:<42} {ctx:<8} {code_score:<7} {reas_score:<7} {speed:<9}{cur_tag}"
+
+                    sys.stdout.write(line + "\n")
+
+            if models and scroll_offset + len(displayed_models) < len(models):
+                below_count = len(models) - (scroll_offset + len(displayed_models))
+                sys.stdout.write(f"   \033[1;30m▼ (+{below_count} more models below)\033[0m\n")
 
             sys.stdout.write("\033[1;36m" + "─" * 96 + "\n" + "\033[0m")
-            pricing_brief = selected_m.get("pricing", {}).get("est_session", selected_m.get("cost", ""))
-            sys.stdout.write(f"  \033[1;37mHovered:\033[0m \033[1;32m{selected_m['name']}\033[0m | \033[1;33m{pricing_brief}\033[0m\n")
-            sys.stdout.write("  \033[1;33m💡 Tip: Press [Shift/Tab/i] or Click to view deep pricing, token economy & benchmarks!\033[0m\n")
+            if selected_m:
+                pricing_brief = selected_m.get("pricing", {}).get("est_session", selected_m.get("cost", ""))
+                sys.stdout.write(f"  \033[1;37mHovered:\033[0m \033[1;32m{selected_m['name']}\033[0m | \033[1;33m{pricing_brief}\033[0m\n")
+                sys.stdout.write("  \033[1;33m💡 Tip: Press [/] Search  •  [Shift/Tab/i] Inspect deep pricing, token economy & benchmarks!\033[0m\n")
+            else:
+                sys.stdout.write("  \033[1;33m💡 Tip: Press [Esc] to cancel search and restore the full catalog.\033[0m\n")
             sys.stdout.write("\033[1;36m" + "=" * 96 + "\n" + "\033[0m")
             sys.stdout.flush()
 
             # Read keyboard or mouse input
-            key = get_key()
+            key = get_key(search_mode=search_mode)
 
-            if key in ["UP", "SCROLL_UP"]:
-                cursor = (cursor - 1) % len(models)
+            # 5. Handle Search Mode Inputs
+            if search_mode:
+                if key == "BACKSPACE":
+                    search_query = search_query[:-1]
+                    cursor = 0
+                elif key == "ESC":
+                    if search_query:
+                        search_query = ""
+                    search_mode = False
+                    cursor = 0
+                elif key in ["ENTER", "DOWN"]:
+                    search_mode = False
+                elif key == "UP":
+                    search_mode = False
+                elif key in ["QUIT"]:
+                    sys.stdout.write("\033[2J\033[H")
+                    print("Model selection closed. Kept current configuration.")
+                    return
+                elif isinstance(key, str) and len(key) == 1 and key.isprintable():
+                    search_query += key
+                    cursor = 0
+                continue
+
+            # 6. Handle Normal Mode Inputs
+            if key == "SEARCH":
+                search_mode = True
+            elif key in ["UP", "SCROLL_UP"]:
+                if models:
+                    cursor = (cursor - 1) % len(models)
             elif key in ["DOWN", "SCROLL_DOWN"]:
-                cursor = (cursor + 1) % len(models)
+                if models:
+                    cursor = (cursor + 1) % len(models)
             elif key in ["PAGE_UP", "HOME"]:
                 cursor = 0
             elif key in ["PAGE_DOWN", "END"]:
-                cursor = max(0, len(models) - 1)
+                if models:
+                    cursor = max(0, len(models) - 1)
             elif key in ["INSPECT", "RIGHT"]:
-                in_dossier = True
+                if selected_m:
+                    in_dossier = True
             elif key in ["TOGGLE_FREE"]:
                 free_only = not free_only
                 if free_only and prov == "oauth":
@@ -780,40 +866,42 @@ def interactive_tui(initial_free_only=False):
                 else:
                     all_models = CURATED_MODELS.get(prov, CURATED_MODELS["openrouter"])
                 cursor = 0
+                scroll_offset = 0
             elif key == "ENTER":
-                sys.stdout.write("\033[2J\033[H")
-                set_model(selected_m["id"], prov)
-                return
+                if selected_m:
+                    sys.stdout.write("\033[2J\033[H")
+                    set_model(selected_m["id"], prov)
+                    return
             elif key in ["ESC", "QUIT"]:
-                sys.stdout.write("\033[2J\033[H")
-                print("Model selection closed. Kept current configuration.")
-                return
+                if search_query:
+                    search_query = ""
+                    cursor = 0
+                    scroll_offset = 0
+                else:
+                    sys.stdout.write("\033[2J\033[H")
+                    print("Model selection closed. Kept current configuration.")
+                    return
             elif isinstance(key, tuple) and key[0] == "MOUSE_CLICK":
                 col, row = key[1], key[2]
-                # Check if click is on a model row
                 row_idx = row - table_start_row
-                if 0 <= row_idx < len(models):
-                    if row_idx == cursor:
-                        # Double click on selected model opens dossier
+                if 0 <= row_idx < len(displayed_models):
+                    target_idx = scroll_offset + row_idx
+                    if target_idx == cursor:
                         in_dossier = True
                     else:
-                        cursor = row_idx
-                # Check if clicking footer controls
-                elif row >= table_start_row + len(models) + 1:
-                    if col < 25:
-                        # Select
+                        cursor = target_idx
+                elif row >= table_start_row + len(displayed_models) + 1:
+                    if col < 25 and selected_m:
                         sys.stdout.write("\033[2J\033[H")
                         set_model(selected_m["id"], prov)
                         return
-                    elif col < 50:
-                        # Inspect
+                    elif col < 50 and selected_m:
                         in_dossier = True
                     elif col < 75:
-                        # Free toggle
                         free_only = not free_only
                         cursor = 0
+                        scroll_offset = 0
                     else:
-                        # Exit
                         sys.stdout.write("\033[2J\033[H")
                         print("Model selection closed. Kept current configuration.")
                         return
@@ -840,6 +928,18 @@ def list_models(provider=None, filter_tier=None, search_query=None):
     if search_query:
         sq = search_query.lower()
         models = [m for m in models if sq in m["id"].lower() or sq in m.get("name", "").lower() or sq in m.get("best_for", "").lower()]
+        # If no models found in active provider, search across all providers
+        if not models and not provider:
+            all_matches = []
+            for p_name, p_models in CURATED_MODELS.items():
+                for m in p_models:
+                    if sq in m["id"].lower() or sq in m.get("name", "").lower() or sq in m.get("best_for", "").lower():
+                        m_copy = dict(m)
+                        m_copy["_provider"] = p_name
+                        all_matches.append(m_copy)
+            if all_matches:
+                models = all_matches
+                prov = "CROSS-PROVIDER SEARCH"
 
     print("==========================================================================================")
     print(f"       Claude Cortex - Models for Provider: {prov.upper()}")
@@ -858,13 +958,14 @@ def list_models(provider=None, filter_tier=None, search_query=None):
         reas = bm.get("reasoning", "-")
         p_brief = m.get("pricing", {}).get("est_session", m.get("best_for", ""))[:35]
         cur_tag = " <-- CURRENT" if is_cur else ""
-        print(f"  [{i:>2}] {tier_tag:<9} {m['id']:<42} Ctx:{ctx:<5} Code:{code:<4} Reas:{reas:<4} {p_brief}{cur_tag}")
+        prov_prefix = f"[{m['_provider'].upper()[:4]}] " if "_provider" in m else ""
+        print(f"  [{i:>2}] {tier_tag:<9} {prov_prefix}{m['id']:<36} Ctx:{ctx:<5} Code:{code:<4} Reas:{reas:<4} {p_brief}{cur_tag}")
 
     print("\nActions:")
-    print("  claude model                      Launch interactive keyboard & mouse model explorer")
-    print("  claude model free                 List only 100% free models")
-    print("  claude model set <model_id>       Set active model directly")
-    print("  claude model info <model_id>      View comprehensive benchmarks, token pricing & dossier")
+    print("  cc model                          Launch interactive keyboard & mouse model explorer")
+    print("  cc model free                     List only 100% free models")
+    print("  cc model set <model_id>           Set active model directly")
+    print("  cc model info <model_id>          View comprehensive benchmarks, token pricing & dossier")
     print("==========================================================================================")
 
 def show_model_info(model_id):
