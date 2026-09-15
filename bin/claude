@@ -8,6 +8,8 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 PROFILES_DIR="${HOME}/.claude-profiles"
 CURRENT_PROFILE_FILE="${PROFILES_DIR}/current_profile"
 SHARED_CLAUDE_DIR="${HOME}/.claude"
@@ -1036,6 +1038,10 @@ export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=0.45
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW=85000
 export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-medium}"
 export MAX_THINKING_TOKENS="${MAX_THINKING_TOKENS:-8192}"
+
+# Uninhibited Mouse Interaction Engine (Scrolling, Clicks & Selection)
+export CLAUDE_CODE_DISABLE_MOUSE=0
+export CLAUDE_CODE_DISABLE_MOUSE_CLICKS=0
 
 # Anti-Stall Stream Watchdogs (prevents false disconnects on thinking/proxies)
 export CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS=60000
