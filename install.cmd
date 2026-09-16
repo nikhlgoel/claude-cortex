@@ -24,6 +24,15 @@ if %PS_EXIT% equ 0 (
     goto :DONE
 )
 
+REM Exit code 3 means the safety guard stopped the run (declined, or no operator
+REM present). That is a deliberate stop, not a failure - do NOT fall back to the
+REM Python installer, or the confirmation prompt is trivially bypassed.
+if %PS_EXIT% equ 3 (
+    echo.
+    echo Installation was cancelled. Nothing was changed.
+    goto :DONE
+)
+
 echo.
 echo [WARNING] PowerShell installation exited with status code %PS_EXIT%.
 echo Attempting fallback installation via Python...

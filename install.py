@@ -15,10 +15,70 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
+# Exit code meaning "the safety guard stopped this run". Callers such as
+# install.cmd must NOT treat it as a recoverable failure and retry another
+# installer, or the guard is trivially bypassed.
+GUARD_DECLINED_EXIT = 3
+
+
 def print_header(title):
     print("=" * 70)
     print(f"          {title}")
     print("=" * 70)
+
+def confirm_install(bin_dir, claude_dir, profiles_dir):
+    """Sandbox guard.
+
+    This installer replaces the `claude` command, writes lifecycle hooks, and
+    installs rules that change model behavior. It refuses to run unless the
+    operator has explicitly opted in, so it cannot be triggered by accident.
+
+    Returns False when the caller should stop (dry run or declined).
+    """
+    argv = sys.argv[1:]
+    assume_yes = any(a in ("--yes", "-y") for a in argv)
+    dry_run = "--dry-run" in argv
+
+    if dry_run:
+        print("[DRY RUN] Would install Claude Cortex with:")
+        print(f"  wrapper   -> {bin_dir}")
+        print(f"  scripts   -> {claude_dir / 'scripts'}")
+        print(f"  commands  -> {claude_dir / 'commands'}")
+        print(f"  rules     -> {claude_dir / 'rules'}")
+        print(f"  settings  -> {claude_dir / 'settings.json'} (hooks)")
+        print(f"  profiles  -> {profiles_dir}")
+        print("[DRY RUN] No changes made.")
+        return False
+
+    if os.environ.get("CORTEX_SANDBOX") == "1" or assume_yes:
+        return True
+
+    print("=" * 70)
+    print("  Claude Cortex installer - CONFIRMATION REQUIRED")
+    print("=" * 70)
+    print("  This will modify your live Claude Code installation:")
+    print(f"    * replace the claude command in {bin_dir}")
+    print(f"    * write lifecycle hooks into {claude_dir / 'settings.json'}")
+    print("    * install rules that change model behavior")
+    print()
+    print("  Set CORTEX_SANDBOX=1 to run in a container, or pass --dry-run first.")
+    print("=" * 70)
+
+    # isatty() is unreliable under some Windows shells, so treat a failed read as
+    # "no operator present" rather than letting an EOFError escape.
+    try:
+        if not sys.stdin.isatty():
+            raise EOFError
+        answer = input("  Type INSTALL to continue: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("  Refusing to run non-interactively without --yes or CORTEX_SANDBOX=1.")
+        sys.exit(GUARD_DECLINED_EXIT)
+
+    if answer != "INSTALL":
+        print("  Aborted. Nothing was changed.")
+        return False
+    return True
+
 
 def main():
     is_windows = (sys.platform == "win32")
@@ -31,6 +91,9 @@ def main():
     claude_dir = home / ".claude"
     profiles_dir = home / ".claude-profiles"
     backup_dir = home / ".claude-backups"
+
+    if not confirm_install(bin_dir, claude_dir, profiles_dir):
+        return
 
     print_header(f"Installing Claude Cortex ({sys.platform})")
     print(f"Source Directory: {script_dir}")
@@ -185,6 +248,49 @@ def main():
 
     # 5. Install Claude Cortex components
     print("\n[5/7] Installing Claude Cortex wrappers, rules & cognitive engines...")
+
+    # The Python core. All real logic lives here; the shell wrappers are thin
+    # shims, so without this every command fails with "Cortex core not found".
+    src_core = script_dir / "cortex"
+    if src_core.is_dir():
+        core_dir = claude_dir / "cortex-core"
+        core_target = core_dir / "cortex"
+        core_dir.mkdir(parents=True, exist_ok=True)
+        if core_target.exists():
+            shutil.rmtree(core_target, ignore_errors=True)
+        shutil.copytree(src_core, core_target)
+        print(f"  ✓ Installed Cortex core to {core_target}")
+    else:
+        print("  ! cortex/ package not found in the source tree; install is incomplete")
+
+    # The `cc` shortcut. Every document refers to `cc`, so an install without it
+    # leaves the documented command simply not existing.
+    def install_cc_alias():
+        if is_windows:
+            # Windows has no reliable unprivileged symlink, so write real shims.
+            (bin_dir / "cc.cmd").write_text(
+                "@echo off\r\n"
+                "REM Claude Cortex - cc shortcut\r\n"
+                'powershell.exe -NoProfile -ExecutionPolicy Bypass '
+                '-File "%~dp0claude.ps1" %*\r\n',
+                encoding="ascii")
+            (bin_dir / "cc.ps1").write_text(
+                "# Claude Cortex - cc shortcut\n"
+                '& "$PSScriptRoot\\claude.ps1" @args\n'
+                "exit $LASTEXITCODE\n",
+                encoding="utf-8")
+        else:
+            link = bin_dir / "cc"
+            target = bin_dir / "claude"
+            try:
+                if link.exists() or link.is_symlink():
+                    link.unlink()
+                link.symlink_to(target)
+            except OSError:
+                shutil.copy2(target, link)
+                link.chmod(0o755)
+        print(f"  ✓ Created cc shortcut in {bin_dir}")
+
     # Binaries
     src_bin = script_dir / "bin"
     if src_bin.exists():
@@ -194,6 +300,7 @@ def main():
             if not is_windows:
                 dest.chmod(0o755)
         print(f"  ✓ Installed master execution wrappers to {bin_dir}")
+        install_cc_alias()
 
     # Config, Rules, Commands, Scripts, Skills
     for folder in ["rules", "commands", "scripts", "skills"]:

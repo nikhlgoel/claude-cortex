@@ -21,6 +21,65 @@ SHARED_DIR="${HOME}/.claude"
 BIN_DIR="${HOME}/.local/bin"
 PROFILES_DIR="${HOME}/.claude-profiles"
 
+# ==============================================================================
+# SANDBOX GUARD
+#
+# This installer modifies a live Claude Code installation: it replaces the
+# `claude` command on PATH, writes lifecycle hooks into ~/.claude/settings.json,
+# and installs rules that change model behavior. Running it by accident on a
+# working machine is disruptive and not trivially reversible.
+#
+# It therefore refuses to run unless one of these is true:
+#   * CORTEX_SANDBOX=1   - running inside a container or throwaway environment
+#   * --yes / -y         - operator has explicitly opted in
+#   * an interactive terminal, where it asks for confirmation
+# ==============================================================================
+ASSUME_YES=0
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y) ASSUME_YES=1 ;;
+        --dry-run) DRY_RUN=1 ;;
+    esac
+done
+DRY_RUN="${DRY_RUN:-0}"
+
+if [ "${CORTEX_SANDBOX:-0}" != "1" ] && [ "$ASSUME_YES" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+    echo "======================================================================"
+    echo "  Claude Cortex installer - CONFIRMATION REQUIRED"
+    echo "======================================================================"
+    echo "  This will modify your live Claude Code installation:"
+    echo "    * replace ${BIN_DIR}/claude with the Cortex wrapper"
+    echo "    * write lifecycle hooks into ${SHARED_DIR}/settings.json"
+    echo "    * install rules into ${SHARED_DIR}/rules/ that change model behavior"
+    echo ""
+    echo "  Set CORTEX_SANDBOX=1 to run in a container, or pass --dry-run first."
+    echo "======================================================================"
+    if [ -t 0 ]; then
+        printf "  Type INSTALL to continue: "
+        read -r _confirm
+        # Exit code 3 = "safety guard stopped this run" (see install.py).
+        if [ "$_confirm" != "INSTALL" ]; then
+            echo "  Aborted. Nothing was changed."
+            exit 3
+        fi
+    else
+        echo "  Refusing to run non-interactively without --yes or CORTEX_SANDBOX=1."
+        exit 3
+    fi
+fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    echo "[DRY RUN] Would install Claude Cortex with:"
+    echo "  wrapper   -> ${BIN_DIR}/claude"
+    echo "  scripts   -> ${SHARED_DIR}/scripts/"
+    echo "  commands  -> ${SHARED_DIR}/commands/"
+    echo "  rules     -> ${SHARED_DIR}/rules/"
+    echo "  settings  -> ${SHARED_DIR}/settings.json (hooks)"
+    echo "  profiles  -> ${PROFILES_DIR}/"
+    echo "[DRY RUN] No changes made."
+    exit 0
+fi
+
 echo "======================================================================"
 echo "        ⚡ Claude Cortex v1.2.0 — Installer"
 echo "======================================================================"
@@ -46,13 +105,9 @@ if [ -z "$REAL_CLAUDE" ]; then
     fi
 fi
 
-if [ -z "$REAL_CLAUDE" ]; then
-    if command -v npm >/dev/null 2>&1; then
-        echo "Claude Code CLI binary not found. Installing via npm..."
-        npm install -g @anthropic-ai/claude-code 2>&1 || true
-        REAL_CLAUDE="$(command -v claude 2>/dev/null || true)"
-    fi
-fi
+# Deliberately NOT auto-running `npm install -g`. Installing a global package is
+# a system-wide change the operator did not ask this script for, and it can shadow
+# or conflict with an existing native install. We report and stop instead.
 
 if [ -z "$REAL_CLAUDE" ]; then
     echo ""
@@ -119,6 +174,22 @@ fi
 # --------------------------------------------------------------------------
 # 7. Install wrapper binary
 # --------------------------------------------------------------------------
+# Install the Python core. All real logic lives here; the shells are shims.
+CORE_DIR="${SHARED_DIR}/cortex-core"
+mkdir -p "${CORE_DIR}"
+rm -rf "${CORE_DIR}/cortex"
+cp -r "${SCRIPT_DIR}/cortex" "${CORE_DIR}/cortex"
+echo "✓ Installed Cortex core → ${CORE_DIR}/cortex"
+
+# IDE process wrappers. These implement the extension's calling convention
+# (wrapper <real-binary> [args...]) and are only used when a wrapper is
+# explicitly configured; profile selection normally uses environmentVariables.
+cp "${SCRIPT_DIR}/bin/cortex-ide-wrapper.sh" "${BIN_DIR}/cortex-ide-wrapper.sh"
+chmod +x "${BIN_DIR}/cortex-ide-wrapper.sh"
+if [ -f "${SCRIPT_DIR}/bin/cortex-ide-wrapper.cmd" ]; then
+    cp "${SCRIPT_DIR}/bin/cortex-ide-wrapper.cmd" "${BIN_DIR}/cortex-ide-wrapper.cmd"
+fi
+
 cp "${SCRIPT_DIR}/bin/claude" "${BIN_DIR}/claude"
 chmod +x "${BIN_DIR}/claude"
 echo "✓ Installed Cortex wrapper → ${BIN_DIR}/claude"
@@ -148,53 +219,10 @@ echo "✓ Installed test suite to ${SHARED_DIR}/tests/"
 # --------------------------------------------------------------------------
 SETTINGS_FILE="${SHARED_DIR}/settings.json"
 if [ ! -f "$SETTINGS_FILE" ]; then
-    cat > "$SETTINGS_FILE" << 'SETTINGS_EOF'
-{
-  "includeCoAuthoredBy": false,
-  "enableWorkflows": true,
-  "theme": "dark",
-  "autoCompactEnabled": true,
-  "autoCompactWindow": 85000,
-  "cleanupPeriodDays": 7,
-  "bashOutputMaxChars": 6000,
-  "taskOutputMaxChars": 8000,
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/scripts/cortex-pretool-hook.py"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/scripts/cortex-prompt-hook.py"
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/scripts/cortex-precompact-hook.py"
-          }
-        ]
-      }
-    ]
-  }
-}
-SETTINGS_EOF
+    # Copied from config/settings.json rather than duplicated inline: an
+    # embedded copy drifts from the real one, which is how the invalid
+    # autoCompactWindow survived as long as it did.
+    cp "${SCRIPT_DIR}/config/settings.json" "$SETTINGS_FILE"
     echo "✓ Created settings.json with lifecycle hooks"
 else
     echo "✓ Existing settings.json preserved (hooks may need manual merge)"
