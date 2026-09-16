@@ -100,25 +100,34 @@ class TestTokenConservation(unittest.TestCase):
             self.assertEqual(code, 0, f"Expected exit code 0 for safe command: {p['tool_input']['command']}")
             self.assertLess(latency_ms, 150.0)
 
-    def test_prompt_hook_intercepts_commands(self):
-        """In-Session Prompt Hook must intercept local cortex commands with exit code 2."""
-        commands = [
-            "cc capacity",
-            "/cc model",
-            "cc turbo",
-            "cc palace",
-            "claude continue",
-            "capacity"
-        ]
-        for cmd in commands:
+    def test_prompt_hook_intercepts_explicit_prefix(self):
+        """Only the explicit /cc and !cc prefixes are intercepted."""
+        for cmd in ["/cc capacity", "/cc model", "!cc palace", "/cc"]:
             code, stdout, stderr, latency_ms = self.run_hook(PROMPT_HOOK, {"prompt": cmd})
-            self.assertEqual(code, 2, f"Expected in-session interception (code 2) for: {cmd}")
-            self.assertLess(latency_ms, 300.0, f"Prompt hook latency too high: {latency_ms:.2f}ms")
+            self.assertEqual(code, 2, f"Expected interception for: {cmd}")
+            self.assertLess(latency_ms, 300.0)
 
-    def test_prompt_hook_intercepts_update_command(self):
-        """In-Session Prompt Hook must intercept 'cc update' with exit code 2."""
-        code, stdout, stderr, latency_ms = self.run_hook(PROMPT_HOOK, {"prompt": "cc update"})
-        self.assertEqual(code, 2, "Expected in-session interception (code 2) for: cc update")
+    def test_prompt_hook_never_erases_ordinary_prompts(self):
+        """Ordinary prompts must reach the model.
+
+        Exit code 2 on UserPromptSubmit blocks AND ERASES the prompt, so a
+        false positive here silently destroys user input. These phrasings were
+        all being swallowed by the previous keyword matching.
+        """
+        for prompt in [
+            "switch to the new API client",
+            "test this function for edge cases",
+            "claude keeps crashing, fix it",
+            "continue the refactor from yesterday",
+            "update the model config",
+            "clean up this module",
+            "research how tokio schedules tasks",
+            "think about the caching strategy",
+            "capacity planning for the queue",
+            "cc is not a word I meant as a command",
+        ]:
+            code, stdout, stderr, latency_ms = self.run_hook(PROMPT_HOOK, {"prompt": prompt})
+            self.assertEqual(code, 0, f"Hook ERASED an ordinary prompt: {prompt!r}")
 
     def test_prompt_hook_passes_regular_prompt(self):
         """In-Session Prompt Hook must pass normal coding prompt with exit code 0."""

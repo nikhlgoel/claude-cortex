@@ -20,6 +20,13 @@ from datetime import datetime, timezone
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TESTS_DIR)
 
+# These tests touch real paths under ~/.claude, so refuse to run outside a
+# sandbox. See tests/_guard.py.
+sys.path.insert(0, TESTS_DIR)
+from _guard import require_sandbox  # noqa: E402
+
+require_sandbox()
+
 REPORT_JSON = os.path.join(TESTS_DIR, "METRICS_REPORT.json")
 REPORT_MD = os.path.join(TESTS_DIR, "METRICS_REPORT.md")
 
