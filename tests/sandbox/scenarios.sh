@@ -1836,6 +1836,9 @@ sys.exit(1)
 scenario_instinct() {
     banner "INSTINCT: learned patterns store works standalone"
 
+    # Start clean: this scenario runs both standalone and as a mutation
+    # detector, sharing SANDBOX_DIR, so a prior run's instincts must not leak in.
+    rm -rf "${SANDBOX_DIR}/homunculus" "${SANDBOX_DIR}/homunculus2"
     export CORTEX_INSTINCT_ROOT="${SANDBOX_DIR}/homunculus"
     local cli="${WORK}/scripts/instinct-cli.py"
 
