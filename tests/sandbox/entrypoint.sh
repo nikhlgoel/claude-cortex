@@ -173,6 +173,7 @@ scenario_list() {
     echo "  provider           key storage, masking, loopback-only gateway"
     echo "  robustness         concurrency, hostile names, scale"
     echo "  ide-paths          settings resolved by probing, not guessing"
+    echo "  fuzz               adversarial exploration (args, state, filesystem chaos)"
     echo "  ide-wrapper        extension calling convention is honoured"
     echo "  install-uninstall  official Claude Code survives an uninstall"
     echo "  rules-budget       always-on prompt payload stays small"
@@ -233,6 +234,7 @@ case "$SCENARIO" in
     provider)          scenario_provider ;;
     robustness)        scenario_robustness ;;
     ide-paths)         scenario_ide_settings_paths ;;
+    fuzz)              scenario_fuzz ;;
     all)
         scenario_smoke
         scenario_install_dryrun
@@ -266,6 +268,7 @@ case "$SCENARIO" in
         scenario_install_py
         scenario_cc_alias
         scenario_install_uninstall
+        scenario_fuzz
         ;;
     *)
         echo "Unknown scenario: ${SCENARIO}" >&2

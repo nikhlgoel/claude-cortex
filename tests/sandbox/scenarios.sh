@@ -1525,3 +1525,35 @@ for i in ide.detect():
         fail "gave up when settings.json did not exist yet"
     fi
 }
+
+# --------------------------------------------------------------------------
+# Adversarial pass. The scenarios above were each written after fixing the bug
+# they cover, so they pass by construction and cannot find anything new. This
+# explores instead: generated argument vectors, random profile-operation
+# sequences, and hostile on-disk states, checking invariants rather than
+# expected output.
+#
+# Its first run found four real defects: an unknown command with trailing
+# arguments still reached a session as a prompt, and three filesystem states
+# produced raw tracebacks.
+#
+# Uses a fixed seed here for reproducibility; run fuzz.py directly with
+# --seed to explore.
+# --------------------------------------------------------------------------
+scenario_fuzz() {
+    banner "FUZZ: adversarial exploration"
+
+    local out rc
+    out=$(CORTEX_WORK="$WORK" CORTEX_STUB_LOG="$STUB_LOG" \
+          CORTEX_SANDBOX_DIR="${SANDBOX_DIR}/fuzz" \
+          python3 "${WORK}/tests/sandbox/fuzz.py" \
+          --seed 20260916 --arg-rounds 30 --state-rounds 18 2>&1)
+    rc=$?
+
+    if [ $rc -eq 0 ]; then
+        pass "$(grep -oE '[0-9]+ checks passed' <<< "$out" | head -1)"
+    else
+        fail "adversarial pass found defects:"
+        grep "^  - " <<< "$out" | head -5 | sed 's/^/      /'
+    fi
+}
