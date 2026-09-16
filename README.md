@@ -26,6 +26,8 @@ between them, and keep IDE and terminal sessions on the same profile.
   context, and preserves architectural context across compaction.
 - **On-demand Skills.** Domain guidance (C++, algorithms, design, architecture,
   hardware) loads when relevant instead of on every request.
+- **Isolated binary analysis.** Ghidra, audited and run with no network route out
+  (`cc ghidra`). See [the audit](tools/ghidra/AUDIT.md).
 
 ## Requirements
 
@@ -186,6 +188,13 @@ not declare. See [tests/sandbox/README.md](tests/sandbox/README.md).
 - **Antigravity integration cannot be tested in CI** (Windows-only app). Its
   settings are generated and statically validated; verify by launching it.
 
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) - how it works, what it cannot do, next steps
+- [Handover](HANDOVER.md) - installing it yourself, with verification steps
+- [Ghidra audit](tools/ghidra/AUDIT.md) - supply-chain findings and residual risk
+- [Test harness](tests/sandbox/README.md) - scenarios, fuzzing, mutation testing
+
 ## Layout
 
 ```
@@ -198,5 +207,7 @@ config/
   settings.json     Hooks and defaults
 scripts/            Hooks and standalone tools
 skills/             On-demand domain guidance
+tools/ghidra/       Audited, network-isolated binary analysis
+docs/               Architecture and design notes
 tests/sandbox/      Container test harness
 ```
