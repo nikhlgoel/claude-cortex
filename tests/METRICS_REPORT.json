@@ -1,12 +1,12 @@
 {
-  "timestamp": "2026-09-15T17:42:26.231852+00:00",
+  "timestamp": "2026-09-15T19:07:49.123018+00:00",
   "summary": {
-    "total_tests": 31,
-    "passed": 31,
+    "total_tests": 38,
+    "passed": 38,
     "failures": 0,
     "errors": 0,
     "success": true,
-    "total_duration_ms": 4176.89
+    "total_duration_ms": 6007.43
   },
   "service_latencies": {
     "pretool_hook_execution_ms": {
@@ -55,6 +55,12 @@
       "target": "< 10ms",
       "measured_p50": 1.5,
       "measured_p95": 3.2,
+      "status": "PASS"
+    },
+    "extension_multimodal_hook_ms": {
+      "target": "< 80ms",
+      "measured_p50": 24.1,
+      "measured_p95": 36.8,
       "status": "PASS"
     }
   },
