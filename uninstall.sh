@@ -58,9 +58,9 @@ rm -rf "${HOME}/.vscode/extensions/anthropic.claude-code-"*
 echo "  ✓ Removed VS Code Claude Code extensions"
 
 # --------------------------------------------------------------------------
-# 4. Remove Claude Desktop
+# 4. Remove Claude Desktop & Application Launcher Entries
 # --------------------------------------------------------------------------
-echo "[4/7] Removing Claude Desktop..."
+echo "[4/7] Removing Claude Desktop & application launcher shortcuts..."
 if command -v claude-desktop-unofficial >/dev/null 2>&1; then
     if command -v npm >/dev/null 2>&1; then
         npm uninstall -g claude-desktop-unofficial 2>/dev/null || true
@@ -70,8 +70,29 @@ if command -v claude-desktop-unofficial >/dev/null 2>&1; then
     fi
 fi
 rm -rf "${HOME}/.config/claude-desktop"*
+rm -rf "${HOME}/.config/claude-profile-"*
+rm -rf "${HOME}/.config/claude-w"*
 rm -rf "${HOME}/.config/Claude"
-echo "  ✓ Removed Claude Desktop"
+
+# Clean user application launcher desktop entries
+rm -f "${HOME}/.local/share/applications/claude-account-"*.desktop
+rm -f "${HOME}/.local/share/applications/claude-code-url-handler.desktop"
+rm -f "${HOME}/.local/share/applications/claude-ws.desktop"
+rm -f "${HOME}/.local/share/applications/claude-vl.desktop"
+rm -f "${HOME}/.local/share/applications/claude-w.desktop"
+
+# Mask system-level RPM desktop file if present so launcher hides it
+mkdir -p "${HOME}/.local/share/applications"
+cat > "${HOME}/.local/share/applications/claude-desktop-unofficial.desktop" << 'MASK_EOF'
+[Desktop Entry]
+Type=Application
+Name=Claude
+NoDisplay=true
+Hidden=true
+MASK_EOF
+
+update-desktop-database "${HOME}/.local/share/applications/" 2>/dev/null || true
+echo "  ✓ Removed Claude Desktop and application launcher entries"
 
 # --------------------------------------------------------------------------
 # 5. Remove all Claude data
