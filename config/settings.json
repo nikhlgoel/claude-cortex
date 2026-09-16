@@ -7,10 +7,7 @@
   "model": "opus",
   "effortLevel": "medium",
   "autoCompactEnabled": true,
-  "autoCompactWindow": 85000,
   "cleanupPeriodDays": 7,
-  "bashOutputMaxChars": 6000,
-  "taskOutputMaxChars": 8000,
   "hooks": {
     "PreToolUse": [
       {
@@ -25,7 +22,6 @@
     ],
     "UserPromptSubmit": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -36,7 +32,7 @@
     ],
     "PreCompact": [
       {
-        "matcher": "",
+        "matcher": "manual|auto",
         "hooks": [
           {
             "type": "command",

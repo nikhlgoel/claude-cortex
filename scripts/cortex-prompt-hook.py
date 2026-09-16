@@ -368,67 +368,31 @@ def main():
             sys.exit(0)
 
         # ======================================================================
-        # PHASE 1: IN-SESSION & EXTENSION CORTEX COMMAND INTERCEPTION
+        # PHASE 1: IN-SESSION CORTEX COMMAND INTERCEPTION
+        #
+        # Interception REQUIRES an explicit prefix: "/cc ..." or "!cc ...".
+        #
+        # An earlier version also matched bare keywords ("test", "switch",
+        # "model", "continue", ...) and any prompt whose first word was "claude".
+        # Because exit code 2 on UserPromptSubmit blocks the prompt AND ERASES
+        # IT, a perfectly ordinary request like "switch to the new API client",
+        # "test this function", or "claude keeps crashing, fix it" was silently
+        # swallowed and never reached the model. Losing a user's prompt is far
+        # worse than making them type two extra characters, so the trigger is now
+        # unambiguous and opt-in.
         # ======================================================================
         is_cmd = False
         cmd_args = []
 
-        # Case A: Explicit command prefixes: 'cc <cmd>', 'claude <cmd>', '!cc', '!claude'
-        if tokens[0].lower() in ("cc", "!cc", "claude", "!claude"):
+        head = tokens[0].lower()
+
+        if head in ("/cc", "!cc"):
             is_cmd = True
             cmd_args = tokens[1:] if len(tokens) > 1 else ["cortex"]
-
-        # Case B: Slash commands: '/<cmd> ...' (e.g. /capacity, /model, /update, /test)
-        elif tokens[0].startswith("/"):
-            subcmd = tokens[0][1:].lower()
-            if subcmd in COMMAND_KEYWORDS or subcmd == "cc":
-                is_cmd = True
-                if subcmd == "cc":
-                    cmd_args = tokens[1:] if len(tokens) > 1 else ["cortex"]
-                else:
-                    cmd_args = [subcmd] + tokens[1:]
-
-        # Case C: Standalone exact keyword commands
-        elif tokens[0].lower() in COMMAND_KEYWORDS:
-            cmd_word = tokens[0].lower()
-            # Direct single-word command: e.g. 'capacity', 'turbo', 'test', 'bench', 'menu', 'update'
-            if len(tokens) == 1:
-                is_cmd = True
-                cmd_args = tokens
-            # Multi-token command invocations with known command keywords
-            elif cmd_word in ("capacity", "quota") and tokens[1].lower() in ("check", "status", "--switch", "--best"):
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word in ("update", "upgrade") and tokens[1].lower() in ("check", "apply", "sync", "status", "--json"):
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word in ("test", "bench") and tokens[1].lower() in ("all", "suite", "bench", "-v", "--json", "metrics"):
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word in ("model",) and tokens[1].lower() in ("list", "set", "free", "paid", "info", "search", "tui"):
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word in ("provider",) and tokens[1].lower() in ("status", "set", "key", "config", "env", "list", "test"):
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word in ("effort", "reasoning") and tokens[1].lower() in ("low", "medium", "high", "max", "auto", "off"):
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word in ("turbo", "fast") and tokens[1].lower() in ("on", "off", "enable", "disable"):
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word == "palace" and tokens[1].lower() in ("status", "map", "tree", "rooms", "blueprint", "workshop", "decisions", "graveyard", "study"):
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word == "remember" and tokens[1].lower() in ("blueprint", "procedures", "graveyard", "decisions", "working", "-r", "--room"):
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word == "switch":
-                is_cmd = True
-                cmd_args = tokens
-            elif cmd_word == "clean" and len(tokens) == 2 and tokens[1].lower() in ("true", "all", "force"):
-                is_cmd = True
-                cmd_args = tokens
+        elif head.startswith("/cc:"):
+            # "/cc:model list" form
+            is_cmd = True
+            cmd_args = [head.split(":", 1)[1]] + tokens[1:]
 
         if is_cmd:
             # Execute command locally on host
