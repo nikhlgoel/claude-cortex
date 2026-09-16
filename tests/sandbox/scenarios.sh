@@ -230,6 +230,13 @@ scenario_install_uninstall() {
     [ -f "${HOME}/.claude.json" ] || { fail "uninstall deleted ~/.claude.json (sign-in/MCP/trust)"; survived=0; }
     grep -q "my own notes" "${HOME}/.claude/CLAUDE.md" 2>/dev/null || { fail "uninstall destroyed user CLAUDE.md"; survived=0; }
     [ $survived -eq 1 ] && pass "official install, IDE extension, and user data all survived"
+
+    # Clean up this scenario's scaffolding. The fake "official binary" is a
+    # non-executable text file, and uninstall legitimately removed the
+    # claude.real symlink - leaving both behind made a LATER scenario resolve the
+    # decoy, fail to exec it, and silently test nothing.
+    rm -rf "${HOME}/.local/share/claude"
+    install -m 0755 "${WORK}/tests/sandbox/stub-claude.py" "${HOME}/.local/bin/claude.real"
 }
 
 # --------------------------------------------------------------------------
@@ -1398,20 +1405,29 @@ scenario_provider() {
         fail "gateway does not default to loopback"
     fi
 
-    (timeout 12 python3 "${WORK}/scripts/cortex-gateway.py" --port 8099 >/dev/null 2>&1 &)
-    sleep 4
+    # Poll rather than sleeping a fixed amount. A fixed wait makes the result
+    # depend on how loaded the machine is, and a test that fails intermittently
+    # teaches people to ignore failures.
+    (timeout 25 python3 "${WORK}/scripts/cortex-gateway.py" --port 8099 >/dev/null 2>&1 &)
     out=$(python3 -c "
-import urllib.request
-try:
-    r = urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)
-    print('OK' if r.status == 200 else 'STATUS=%d' % r.status)
-except Exception as e:
-    print('ERR ' + type(e).__name__)
+import time, urllib.request
+deadline = time.time() + 15
+last = 'never responded'
+while time.time() < deadline:
+    try:
+        r = urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=2)
+        print('OK' if r.status == 200 else 'STATUS=%d' % r.status)
+        break
+    except Exception as exc:
+        last = type(exc).__name__
+        time.sleep(0.4)
+else:
+    print('ERR ' + last)
 ")
     if [[ "$out" == OK ]]; then
         pass "gateway starts and answers /health"
     else
-        fail "gateway did not respond -> $out"
+        fail "gateway did not respond within 15s -> $out"
     fi
 }
 
@@ -1543,6 +1559,9 @@ for i in ide.detect():
 scenario_fuzz() {
     banner "FUZZ: adversarial exploration"
 
+    # Do not inherit whatever the previous scenario left behind.
+    install -m 0755 "${WORK}/tests/sandbox/stub-claude.py" "${HOME}/.local/bin/claude.real"
+
     local out rc
     out=$(CORTEX_WORK="$WORK" CORTEX_STUB_LOG="$STUB_LOG" \
           CORTEX_SANDBOX_DIR="${SANDBOX_DIR}/fuzz" \
@@ -1555,5 +1574,56 @@ scenario_fuzz() {
     else
         fail "adversarial pass found defects:"
         grep "^  - " <<< "$out" | head -5 | sed 's/^/      /'
+    fi
+}
+
+# --------------------------------------------------------------------------
+# Environment and concurrency chaos: hostile HOME, preset CLAUDE_CONFIG_DIR,
+# empty PATH, parallel invocations racing on shared state, and IDE settings
+# files that are directories, dangling symlinks, or JSON arrays.
+# --------------------------------------------------------------------------
+scenario_chaos_env() {
+    banner "CHAOS: hostile environment and concurrent use"
+
+    install -m 0755 "${WORK}/tests/sandbox/stub-claude.py" "${HOME}/.local/bin/claude.real"
+
+    local out rc
+    out=$(CORTEX_WORK="$WORK" CORTEX_STUB_LOG="$STUB_LOG" \
+          CORTEX_SANDBOX_DIR="${SANDBOX_DIR}/chaosenv" \
+          python3 "${WORK}/tests/sandbox/chaos_env.py" 2>&1)
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        pass "$(grep -oE '[0-9]+ checks passed' <<< "$out" | head -1)"
+    else
+        fail "environment chaos found defects:"
+        grep "^  - " <<< "$out" | head -5 | sed 's/^/      /'
+    fi
+}
+
+# --------------------------------------------------------------------------
+# Mutation testing. The point of this one is different from every scenario
+# above: it measures whether the SUITE works, by reintroducing each fixed bug
+# and checking that something notices.
+#
+# A suite reporting zero failures proves nothing on its own - it may simply be
+# unable to fail. When this was first run, 4 of 10 mutations went undetected.
+# --------------------------------------------------------------------------
+scenario_mutation() {
+    banner "MUTATION: do the tests actually detect regressions?"
+
+    local out rc
+    out=$(CORTEX_WORK="$WORK" CORTEX_STUB_LOG="$STUB_LOG" \
+          python3 "${WORK}/tests/sandbox/mutate.py" 2>&1)
+    rc=$?
+    local summary
+    summary=$(grep -oE '[0-9]+/[0-9]+ mutations caught' <<< "$out" | head -1)
+
+    if [ $rc -eq 0 ]; then
+        pass "${summary:-all mutations caught}"
+    else
+        fail "tests that do not protect anything: ${summary}"
+        # Print the whole diagnostic. Truncating it previously hid the reason a
+        # mutation was missed and turned debugging into guesswork.
+        sed 's/^/      /' <<< "$out" | tail -40
     fi
 }

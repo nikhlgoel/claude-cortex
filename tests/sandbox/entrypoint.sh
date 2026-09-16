@@ -13,7 +13,7 @@
 set -uo pipefail
 
 REPO_RO="/repo"          # read-only mount of the repository
-WORK="/work"             # writable copy the scenario operates on
+WORK="${CORTEX_WORK_DIR:-/work}"   # writable copy the scenario operates on
 SANDBOX_DIR="${HOME}/.cortex-sandbox"
 STUB_LOG="${SANDBOX_DIR}/stub-invocations.jsonl"
 SNAPSHOT="${SANDBOX_DIR}/home-snapshot.json"
@@ -40,6 +40,17 @@ FAILURES=0
 # Prepare the writable copy and the stub binary
 # --------------------------------------------------------------------------
 prepare() {
+    # Mutation testing modifies /work deliberately and then runs a scenario to
+    # see whether it is noticed. Re-copying from /repo here would silently undo
+    # the mutation and report a false pass, so allow the reset to be skipped.
+    if [ "${CORTEX_NO_RESET:-0}" = "1" ] && [ -d "${WORK}/cortex" ]; then
+        export CORTEX_STUB_LOG="${CORTEX_STUB_LOG:-$STUB_LOG}"
+        mkdir -p "$SANDBOX_DIR" "${HOME}/.local/bin"
+        [ -f "${HOME}/.local/bin/claude.real" ] ||             install -m 0755 "${WORK}/tests/sandbox/stub-claude.py" "${HOME}/.local/bin/claude.real"
+        : > "$CORTEX_STUB_LOG"
+        return 0
+    fi
+
     # Empty /work rather than removing it: the directory is owned by this user
     # but its parent (/) is not, so unlinking the directory itself is denied.
     [ -d "$WORK" ] && find "$WORK" -mindepth 1 -delete 2>/dev/null
@@ -174,6 +185,8 @@ scenario_list() {
     echo "  robustness         concurrency, hostile names, scale"
     echo "  ide-paths          settings resolved by probing, not guessing"
     echo "  fuzz               adversarial exploration (args, state, filesystem chaos)"
+    echo "  chaos-env          hostile environment, concurrency, IDE settings chaos"
+    echo "  mutation           do the tests actually detect regressions?"
     echo "  ide-wrapper        extension calling convention is honoured"
     echo "  install-uninstall  official Claude Code survives an uninstall"
     echo "  rules-budget       always-on prompt payload stays small"
@@ -235,6 +248,8 @@ case "$SCENARIO" in
     robustness)        scenario_robustness ;;
     ide-paths)         scenario_ide_settings_paths ;;
     fuzz)              scenario_fuzz ;;
+    chaos-env)         scenario_chaos_env ;;
+    mutation)          scenario_mutation ;;
     all)
         scenario_smoke
         scenario_install_dryrun
@@ -269,6 +284,8 @@ case "$SCENARIO" in
         scenario_cc_alias
         scenario_install_uninstall
         scenario_fuzz
+        scenario_chaos_env
+        scenario_mutation
         ;;
     *)
         echo "Unknown scenario: ${SCENARIO}" >&2

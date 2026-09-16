@@ -89,9 +89,55 @@ def fuzz_arguments(rounds, rng, profiles_dir):
     """Invariants that must hold for ANY argument vector."""
     print(f"[args] fuzzing {rounds} argument vectors")
 
+    # A signed-in profile must exist first. Without one, require_profile refuses
+    # before the launch path is reached, so "did a command leak into a session"
+    # could never be observed.
+    #
+    # This precondition is ASSERTED rather than assumed. When setup silently
+    # failed, the pass reported 274 checks while actually testing nothing - and
+    # mutation testing exposed it as a mutation that was caught standalone but
+    # missed inside the full suite. A test that cannot establish its
+    # preconditions must fail, not report success.
+    run_cc(["profile", "add", "fuzzprof"],
+           env_extra={"CORTEX_PROFILES_DIR": profiles_dir})
+    run_cc(["login", "fuzzprof"],
+           env_extra={"CORTEX_PROFILES_DIR": profiles_dir})
+
+    open(STUB_LOG, "w").close()
+    rc, out, err, timed_out = run_cc(
+        ["-fuzzprof", "-s"], env_extra={"CORTEX_PROFILES_DIR": profiles_dir})
+    launched = [c for c in stub_invocations()
+                if c.get("argv") and c["argv"][0] not in ("auth", "--version")]
+    if not launched:
+        record(False,
+               "PRECONDITION FAILED: could not launch a session with a signed-in "
+               "profile, so leak detection below is vacuous. "
+               f"rc={rc} out={(out + err)[-250:]!r}")
+        return
+
+    # Random generation alone leaves gaps: mutation testing showed a known-bad
+    # vector (an unknown command WITH trailing arguments) was simply never
+    # produced at this seed, so the check passed while the bug was live. Always
+    # run the known-dangerous corpus, then fuzz on top of it.
+    corpus = [
+        ["nonsensecmd"],
+        ["nonsensecmd", "check"],
+        ["nonsensecmd", "---", "check", "bogus"],
+        ["docs", "extra"],
+        ["menu", "-s"],
+        ["typo", "--effort=high"],
+        ["status", "unexpected"],
+        ["profile", "nonsense-action"],
+        ["ide", "nonsense-action"],
+        ["palace", "--weird"],
+    ]
+
+    vectors = list(corpus)
     for _ in range(rounds):
         n = rng.randint(1, 5)
-        args = [rng.choice(TOKENS) for _ in range(n)]
+        vectors.append([rng.choice(TOKENS) for _ in range(n)])
+
+    for args in vectors:
 
         open(STUB_LOG, "w").close()
         rc, out, err, timed_out = run_cc(
@@ -107,8 +153,9 @@ def fuzz_arguments(rounds, rng, profiles_dir):
         # first token is a known command or an unknown bare word, nothing should
         # reach the CLI as a prompt.
         head = args[0] if args else ""
-        if head in ("status", "doctor", "version", "help", "profile", "ide",
-                    "docs", "menu", "nonsensecmd"):
+        never_a_prompt = ("status", "doctor", "version", "help", "profile", "ide",
+                          "docs", "menu", "nonsensecmd", "typo", "palace")
+        if head in never_a_prompt:
             launched = [c for c in stub_invocations()
                         if c.get("argv") and c["argv"][0] not in
                         ("auth", "--version", "update")]
@@ -202,6 +249,18 @@ def check_properties(rng):
                     for s in spellings if s}
         record(len(suffixes) == 1,
                f"credential namespace differs by spelling for {base!r}: {suffixes}")
+
+    # Unicode: the same path written in NFC and NFD must resolve to one
+    # namespace. macOS hands out NFD filenames while most tooling produces NFC,
+    # so without normalization the same directory hashes two ways and a profile
+    # looks signed out depending on which form reached us.
+    nfc = "/tmp/café/p"          # e-acute as one code point
+    nfd = "/tmp/café/p"         # e + combining acute
+    record(canonical_dir(nfc) == canonical_dir(nfd),
+           "NFC and NFD spellings of the same path do not canonicalize equal")
+    record(securestorage_suffix(canonical_dir(nfc))
+           == securestorage_suffix(canonical_dir(nfd)),
+           "NFC and NFD spellings produce different credential namespaces")
 
 
 
