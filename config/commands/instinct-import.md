@@ -14,7 +14,7 @@ Run the instinct CLI using the plugin root path:
 python3 "${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/scripts/instinct-cli.py" import <file-or-url> [--dry-run] [--force] [--min-confidence 0.7] [--scope project|global]
 ```
 
-Or if `CLAUDE_PLUGIN_ROOT` is not set (manual installation):
+Or if `CLAUDE_PLUGIN_ROOT` is not set (manual installation), or as a **Cortex fallback** when the ECC plugin is absent, use the Cortex-native store at `~/.claude/scripts/instinct-cli.py` (same CLI, same storage):
 
 ```bash
 python3 ~/.claude/skills/continuous-learning-v2/scripts/instinct-cli.py import <file-or-url>

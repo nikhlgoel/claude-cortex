@@ -64,3 +64,15 @@ Use functional patterns over classes.
 - `--min-confidence <n>`: Minimum confidence threshold
 - `--output <file>`: Output file path (prints to stdout when omitted)
 - `--scope <project|global|all>`: Export scope (default: `all`)
+
+## Implementation
+
+Export all instincts (project + global) as JSON. Prefer the ECC plugin's CLI if
+installed; otherwise use the Cortex-native store, which shares the same storage.
+
+```bash
+CLI="$HOME/.claude/skills/continuous-learning-v2/scripts/instinct-cli.py"
+[ -f "$CLI" ] || CLI="${CLAUDE_PLUGIN_ROOT:-}/skills/continuous-learning-v2/scripts/instinct-cli.py"
+[ -f "$CLI" ] || CLI="$HOME/.claude/scripts/instinct-cli.py"   # Cortex fallback
+python3 "$CLI" export "$@"
+```
