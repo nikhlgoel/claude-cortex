@@ -1630,9 +1630,9 @@ scenario_mutation() {
 
 # --------------------------------------------------------------------------
 # A repository checkout must win over an installed copy. The order used to be
-# reversed, so running a tool from a checkout silently executed the version at
-# ~/.claude/scripts - a rewritten tool appeared not to have changed, and in one
-# case crashed inside code that no longer existed.
+# reversed, so running a tool from a checkout silently executed the installed version - a
+# rewritten tool appeared not to have changed, and in one case crashed inside
+# code that no longer existed.
 # --------------------------------------------------------------------------
 scenario_script_precedence() {
     banner "PRECEDENCE: a checkout beats the installed copy"
@@ -1642,7 +1642,7 @@ scenario_script_precedence() {
     # Make the installed copy clearly distinguishable from the repo one.
     mkdir -p "${HOME}/.claude/scripts"
     printf '#!/usr/bin/env python3\nprint("INSTALLED-STALE-COPY")\n' \
-        > "${HOME}/.claude/scripts/claude-dream.py"
+        > "${HOME}/.claude/scripts/claude-analyze.py"
 
     local out
     out=$(cd "$WORK" && PYTHONPATH="$WORK" python3 -m cortex dream --path cortex 2>&1 | head -3)
@@ -1657,7 +1657,7 @@ scenario_script_precedence() {
           python3 -c "
 import sys; sys.path.insert(0, '${HOME}/.claude/cortex-core')
 from cortex import tools
-print('found' if tools.find_script('claude-dream.py') else 'missing')
+print('found' if tools.find_script('claude-analyze.py') else 'missing')
 " 2>&1)
     if [[ "$out" == *found* ]]; then
         pass "installed copy still resolves outside a checkout"
@@ -1670,8 +1670,8 @@ print('found' if tools.find_script('claude-dream.py') else 'missing')
 # dream must analyse, not print a fixed checklist. The regression to guard
 # against is it reverting to output that does not depend on the input.
 # --------------------------------------------------------------------------
-scenario_dream_real() {
-    banner "DREAM: output depends on the code analysed"
+scenario_analyze() {
+    banner "ANALYZE: risk findings depend on the code (not a template)"
 
     local dir="${SANDBOX_DIR}/dreamtest"
     mkdir -p "$dir"
@@ -1703,7 +1703,7 @@ def collect(items=None):
 PY
 
     local bad good
-    bad=$(python3 "${WORK}/scripts/claude-dream.py" --path "$dir" --json 2>/dev/null)
+    bad=$(python3 "${WORK}/scripts/claude-analyze.py" --path "$dir" --json 2>/dev/null)
     local n_bad
     n_bad=$(python3 -c "
 import json,sys

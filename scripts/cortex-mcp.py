@@ -125,7 +125,7 @@ def tool_analyze_code_risks(args):
         return "Provide a 'path' (a file or directory) to analyse."
     if not os.path.exists(path):
         return f"Path not found: {path}"
-    script = scripts_dir() / "claude-dream.py"
+    script = scripts_dir() / "claude-analyze.py"
     if not script.is_file():
         return "The analyser is not installed."
     result = subprocess.run(

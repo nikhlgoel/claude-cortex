@@ -22,8 +22,10 @@ TOOLS = {
     "palace":   ("claude-palace.py", []),
     "remember": ("claude-palace.py", ["remember"]),
     "recall":   ("claude-palace.py", ["recall"]),
-    # Scaffold: fixed checklist, no model calls, identical for any topic.
-    "dream":    ("claude-dream.py", []),
+    # Static risk analysis of source code (file/line/mechanism). Formerly named
+    # "dream"; renamed because dream is now the in-session concept explorer and
+    # this is a linter, which is a different thing.
+    "analyze":  ("claude-analyze.py", []),
     # Real: queries the arXiv API and returns actual papers.
     "research": ("claude-research.py", []),
     "provider": ("claude-provider.py", []),
@@ -32,16 +34,21 @@ TOOLS = {
 
 # Commands that existed in older versions and no longer do. Naming them
 # explicitly produces a useful message instead of a confusing one.
+# dream is not a terminal command: exploring a concept requires a model, which
+# lives in a session, not in the shell. Point the user at the in-session form.
+IN_SESSION_ONLY = {
+    "dream": "dream explores a concept in depth and needs a model to reason. "
+             "In a Claude Code session, type:  /dream <your concept>",
+    "think": "concept reasoning happens in a session: /dream <your concept>",
+}
+
 RETIRED = {
     # Cut rather than rewritten. It printed a fixed scaffold that varied only by
     # the echoed prompt - no analysis, no model call. The honest options were to
     # make it call a model or to remove it, and `cc dream` now covers the
     # "what breaks" case with real findings, so a second scaffold earns nothing.
-    "think": "removed; it printed a fixed scaffold. Use 'cc dream' for real "
-             "analysis, or just ask Claude directly",
-    "smart": "removed; it printed a fixed scaffold. Use 'cc dream' for real "
-             "analysis, or just ask Claude directly",
-    "cognition": "removed; see 'cc dream'",
+    "smart": "concept reasoning happens in a session: /dream <your concept>",
+    "cognition": "concept reasoning happens in a session: /dream <your concept>",
 
     "menu":  "the interactive menu was removed; use 'cc --help'",
     "docs":  "documentation moved to README.md and HANDOVER.md in the repository",
@@ -93,6 +100,18 @@ def is_tool(command):
 
 def is_retired(command):
     return command in RETIRED
+
+
+def is_in_session_only(command):
+    return command in IN_SESSION_ONLY
+
+
+def explain_in_session(command):
+    import sys as _sys
+    print(f"cc: '{command}' runs inside a Claude Code session, not the terminal.",
+          file=_sys.stderr)
+    print(f"    {IN_SESSION_ONLY[command]}", file=_sys.stderr)
+    return 0
 
 
 def run(command, args):

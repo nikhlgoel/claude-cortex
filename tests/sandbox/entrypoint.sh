@@ -194,7 +194,7 @@ scenario_list() {
     echo "  chaos-env          hostile environment, concurrency, IDE settings chaos"
     echo "  mutation           do the tests actually detect regressions?"
     echo "  precedence         a checkout beats the installed copy"
-    echo "  dream              output depends on the code analysed"
+    echo "  analyze            risk findings depend on the code (not a template)"
     echo "  mcp                tools exposed, subscription untouched by registration"
     echo "  instinct           learned-patterns store works standalone"
     echo "  integrity          install matches source; tampering detected"
@@ -263,7 +263,7 @@ case "$SCENARIO" in
     chaos-env)         scenario_chaos_env ;;
     mutation)          scenario_mutation ;;
     precedence)        scenario_script_precedence ;;
-    dream)             scenario_dream_real ;;
+    analyze)           scenario_analyze ;;
     mcp)               scenario_mcp ;;
     instinct)          scenario_instinct ;;
     integrity)         scenario_integrity ;;
@@ -305,7 +305,7 @@ case "$SCENARIO" in
         scenario_chaos_env
         scenario_mutation
         scenario_script_precedence
-        scenario_dream_real
+        scenario_analyze
         scenario_mcp
         scenario_instinct
         scenario_integrity

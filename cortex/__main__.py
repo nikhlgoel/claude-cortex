@@ -60,7 +60,8 @@ Tools
   cc palace | remember | recall   Memory palace
   cc model [free|<search>]        Live model catalog with real pricing
   cc provider | update            API providers, updates
-  cc dream                        Static risk analysis of real code
+  cc analyze <path>               Static risk analysis of source code
+  (dream is in-session: /dream <concept>)
   cc research <topic>             Live arXiv retrieval
 
 Prompts
@@ -277,6 +278,8 @@ def main(argv=None):
             return models.main(rest)
         if tools.is_tool(head):
             return tools.run(head, rest)
+        if tools.is_in_session_only(head):
+            return tools.explain_in_session(head)
         if tools.is_retired(head):
             return tools.explain_retired(head)
 
