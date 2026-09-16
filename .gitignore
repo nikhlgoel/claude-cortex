@@ -34,3 +34,6 @@ Thumbs.db
 # local Ghidra verification artifacts
 .ghidra-test/
 ghidra-out/
+
+# integrity manifest - generated at install/release, never committed (would go stale)
+MANIFEST.sha256

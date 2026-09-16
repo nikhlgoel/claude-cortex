@@ -1887,3 +1887,69 @@ scenario_instinct() {
 
     unset CORTEX_INSTINCT_ROOT
 }
+
+# --------------------------------------------------------------------------
+# Integrity: "does my install match what I reviewed?" The installer writes a
+# manifest from the source; verify confirms the installed files still match it,
+# and detects any modification, missing file, or injected extra afterwards.
+# This is the Cortex-side complement to the Ghidra supply-chain audit.
+# --------------------------------------------------------------------------
+scenario_integrity() {
+    banner "INTEGRITY: install matches source, tampering is detected"
+
+    CORTEX_SANDBOX=1 bash "${WORK}/install.sh" --yes >/dev/null 2>&1
+    local core="${HOME}/.claude/cortex-core"
+
+    if [ -f "${core}/MANIFEST.sha256" ]; then
+        local n; n=$(wc -l < "${core}/MANIFEST.sha256")
+        pass "install wrote a manifest ($n files)"
+    else
+        fail "install did not write a manifest"
+        return
+    fi
+
+    # A fresh install must verify clean.
+    local out
+    out=$(python3 "${WORK}/cortex/integrity.py" verify --root "$core" 2>&1)
+    if [[ "$out" == *"byte-for-byte"* ]]; then
+        pass "fresh install verifies byte-for-byte"
+    else
+        fail "fresh install did not verify -> $(grep -iE 'match|modif' <<< "$out" | head -1)"
+    fi
+
+    # Tamper with a core file: verify must catch it.
+    echo "# injected" >> "${core}/cortex/paths.py"
+    out=$(python3 "${WORK}/cortex/integrity.py" verify --root "$core" 2>&1)
+    if [[ "$out" == *"MODIFIED"* && "$out" == *"cortex/paths.py"* ]]; then
+        pass "detects a modified file"
+    else
+        fail "did not detect tampering"
+    fi
+
+    # Inject a new file: verify must report it as EXTRA.
+    echo "malware" > "${core}/scripts/injected.py"
+    out=$(python3 "${WORK}/cortex/integrity.py" verify --root "$core" 2>&1)
+    if [[ "$out" == *"EXTRA"* && "$out" == *"injected.py"* ]]; then
+        pass "detects an injected extra file"
+    else
+        fail "did not detect an injected file"
+    fi
+
+    # Remove a file: verify must report it MISSING.
+    rm -f "${core}/scripts/injected.py"
+    rm -f "${core}/cortex/capacity.py"
+    out=$(python3 "${WORK}/cortex/integrity.py" verify --root "$core" 2>&1)
+    if [[ "$out" == *"MISSING"* && "$out" == *"cortex/capacity.py"* ]]; then
+        pass "detects a missing file"
+    else
+        fail "did not detect a missing file"
+    fi
+
+    # verify exits non-zero when the install is compromised.
+    python3 "${WORK}/cortex/integrity.py" verify --root "$core" >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        pass "verify exits non-zero on a compromised install"
+    else
+        fail "verify reported success on a compromised install"
+    fi
+}

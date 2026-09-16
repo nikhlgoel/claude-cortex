@@ -197,6 +197,7 @@ scenario_list() {
     echo "  dream              output depends on the code analysed"
     echo "  mcp                tools exposed, subscription untouched by registration"
     echo "  instinct           learned-patterns store works standalone"
+    echo "  integrity          install matches source; tampering detected"
     echo "  ide-wrapper        extension calling convention is honoured"
     echo "  install-uninstall  official Claude Code survives an uninstall"
     echo "  rules-budget       always-on prompt payload stays small"
@@ -264,6 +265,7 @@ case "$SCENARIO" in
     dream)             scenario_dream_real ;;
     mcp)               scenario_mcp ;;
     instinct)          scenario_instinct ;;
+    integrity)         scenario_integrity ;;
     all)
         scenario_smoke
         scenario_install_dryrun
@@ -304,6 +306,7 @@ case "$SCENARIO" in
         scenario_dream_real
         scenario_mcp
         scenario_instinct
+        scenario_integrity
         ;;
     *)
         echo "Unknown scenario: ${SCENARIO}" >&2

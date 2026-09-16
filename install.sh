@@ -181,6 +181,21 @@ rm -rf "${CORE_DIR}/cortex"
 cp -r "${SCRIPT_DIR}/cortex" "${CORE_DIR}/cortex"
 echo "✓ Installed Cortex core → ${CORE_DIR}/cortex"
 
+# Stage a canonical snapshot of the payload into the core, then generate a
+# manifest over it. This gives `cc integrity verify` one coherent tree to check
+# ("does my install match the reviewed source?") rather than files scattered
+# across ~/.claude, ~/.local/bin and the rest.
+for payload in scripts config completion skills tools; do
+    if [ -d "${SCRIPT_DIR}/${payload}" ]; then
+        rm -rf "${CORE_DIR}/${payload}"
+        cp -r "${SCRIPT_DIR}/${payload}" "${CORE_DIR}/${payload}"
+    fi
+done
+if command -v python3 >/dev/null 2>&1; then
+    ( cd "${CORE_DIR}" && PYTHONPATH="${CORE_DIR}" python3 -m cortex integrity generate >/dev/null 2>&1 ) || true
+    [ -f "${CORE_DIR}/MANIFEST.sha256" ] && echo "✓ Wrote integrity manifest ($(wc -l < "${CORE_DIR}/MANIFEST.sha256") files)"
+fi
+
 # IDE process wrappers. These implement the extension's calling convention
 # (wrapper <real-binary> [args...]) and are only used when a wrapper is
 # explicitly configured; profile selection normally uses environmentVariables.

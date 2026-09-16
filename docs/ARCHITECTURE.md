@@ -210,8 +210,9 @@ check** that fails on any change it did not declare.
 6. Per-profile **usage history**, so capacity reporting stops depending on a cache
    Claude Code may not have written.
 7. `cc doctor --explain <symptom>` — map a symptom to its cause and fix.
-8. Signed release artifacts and a provenance stamp, so "installed == reviewed" is
-   checkable rather than assumed.
+8. ~~Signed release artifacts and a provenance stamp~~ - `cc integrity verify`
+   now confirms an install is byte-for-byte the reviewed source, and detects
+   post-install tampering. Signing the manifest itself is the remaining step.
 9. Extend mutation coverage to the hooks and installers, which have none.
 
 **Longer term**

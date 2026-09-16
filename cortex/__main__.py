@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import sys
 
-from . import capacity, doctor, ghidra, ide, launcher, mcp, profiles, tools
+from . import capacity, doctor, ghidra, ide, integrity, launcher, mcp, profiles, tools
 from .profiles import CortexError
 from .paths import profile_dir, profiles_dir
 
@@ -20,7 +20,8 @@ VERSION = "2.0.0"
 # Recognized top-level commands, used for the "did you mean" hint.
 TOP_LEVEL_COMMANDS = (
     "profile", "profiles", "login", "switch", "status", "quota", "capacity",
-    "limits", "continue", "doctor", "ide", "ghidra", "mcp", "version", "help",
+    "limits", "continue", "doctor", "ide", "ghidra", "mcp", "integrity",
+    "version", "help",
 ) + tuple(tools.TOOLS)
 
 USAGE = """\
@@ -46,6 +47,7 @@ Session
 
 Diagnostics
   cc doctor [--repair]            Diagnose configuration problems
+  cc integrity verify             Check the install matches the reviewed source
   cc ide check                    Inspect IDE integration
   cc ide apply [--yes]            Configure IDEs for the active profile
   cc version
@@ -268,6 +270,8 @@ def main(argv=None):
             return ghidra.main(rest)
         if head == "mcp":
             return mcp.main(rest)
+        if head == "integrity":
+            return integrity.main(rest)
         if tools.is_tool(head):
             return tools.run(head, rest)
         if tools.is_retired(head):

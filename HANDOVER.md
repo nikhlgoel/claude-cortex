@@ -103,6 +103,24 @@ cc login main
 cc status
 ```
 
+### Step 3.5 - confirm the install matches what you reviewed
+
+```bash
+cc integrity verify
+```
+
+The installer records a manifest of every payload file. This confirms your
+install is byte-for-byte the source you reviewed, and afterwards detects any file
+that is modified, missing, or injected. To check a possibly-compromised install
+from a trusted copy of the repo:
+
+```bash
+python3 cortex/integrity.py verify --root ~/.claude/cortex-core
+```
+
+That path imports only hashlib and os, so it works even if a core module was
+altered - you never rely on the install's own code to vouch for it.
+
 ### Step 4 - confirm the fix that mattered most
 
 Launch a session and give it a real task:
