@@ -1,0 +1,331 @@
+"""
+Claude Cortex - command dispatch.
+
+Single implementation shared by the bash, PowerShell, and cmd shims. Having one
+core rather than parallel shell implementations is what keeps the two platforms
+from drifting apart, which is where most of the previous bugs came from.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+from . import capacity, doctor, ide, launcher, profiles, tools
+from .paths import profile_dir, profiles_dir
+
+VERSION = "2.0.0"
+
+# Recognized top-level commands, used for the "did you mean" hint.
+TOP_LEVEL_COMMANDS = (
+    "profile", "profiles", "login", "switch", "status", "quota", "capacity",
+    "limits", "continue", "doctor", "ide", "version", "help",
+) + tuple(tools.TOOLS)
+
+USAGE = """\
+Claude Cortex (cc) - multi-account Claude Code launcher
+
+  cc [profile] [claude args...]   Launch a session (default: active profile)
+  cc -<profile>                   Launch a specific profile, e.g. cc -work
+
+Profiles
+  cc profile list                 Show profiles and auth state
+  cc profile add [name]           Create a profile
+  cc profile remove <name>        Delete a profile
+  cc login [name]                 Sign in to a profile
+  cc switch [name]                Set the active profile
+  cc status | cc quota            Account capacity
+
+Session
+  cc continue [name]              Resume the last conversation
+  cc -s | -o | -H                 Sonnet 5 | Opus 5 | Haiku 4.5
+  cc -e <low|medium|high|xhigh|max>   Reasoning effort
+  cc -t                           Turbo (Haiku, low effort)
+  cc -y                           Skip permission prompts
+
+Diagnostics
+  cc doctor [--repair]            Diagnose configuration problems
+  cc ide check                    Inspect IDE integration
+  cc ide apply [--yes]            Configure IDEs for the active profile
+  cc version
+
+Tools
+  cc palace | remember | recall   Memory palace
+  cc model | provider | update    Model catalog, API providers, updates
+  cc dream | research | think     Review scaffolds (see README limitations)
+
+Prompts
+  cc -- <prompt>                  Send a prompt, even if it looks like a command
+"""
+
+
+def cmd_profile(args):
+    action = args[0] if args else "list"
+    rest = args[1:]
+
+    if action in ("list", "ls", "status"):
+        print(capacity.render())
+        return 0
+
+    if action in ("add", "new", "create"):
+        raw = rest[0] if rest else ""
+        if not raw and sys.stdin.isatty():
+            raw = input("New profile name: ")
+        name = profiles.normalize_name(raw)
+
+        if not name:
+            if raw.strip():
+                # e.g. a name that is entirely non-ASCII. Say why, rather than
+                # claiming no name was supplied.
+                print(f"'{raw.strip()}' contains no usable characters for a "
+                      f"profile name.", file=sys.stderr)
+                print("    Use letters, digits, '-' or '_'.", file=sys.stderr)
+            else:
+                print("A profile name is required.", file=sys.stderr)
+            return 2
+
+        # Names are sanitized (which is also what stops path traversal such as
+        # "../../etc"). Say so, rather than silently creating something the user
+        # did not type and will later fail to find.
+        if name != raw.strip():
+            print(f"Note: using '{name}' (adjusted from '{raw.strip()}').")
+
+        # A profile sharing a command's name can never be launched as `cc <name>`,
+        # because dispatch checks commands first. Reject it at creation rather
+        # than leaving a profile that appears to work but is unreachable.
+        if name in TOP_LEVEL_COMMANDS or tools.is_retired(name):
+            print(f"'{name}' is a Cortex command and cannot be a profile name.",
+                  file=sys.stderr)
+            print(f"    Pick another name, e.g. '{name}-acct'.", file=sys.stderr)
+            return 2
+
+        if os.path.isdir(profile_dir(name)):
+            print(f"Profile '{name}' already exists.")
+            return 0
+
+        mode = "synced"
+        if "--isolated" in rest:
+            mode = "isolated"
+        profiles.ensure_structure(name, mode)
+        print(f"Created profile '{name}' ({mode}).")
+
+        if sys.stdin.isatty():
+            answer = input(f"Sign in to '{name}' now? [Y/n]: ").strip().lower()
+            if answer in ("", "y", "yes"):
+                return profiles.login(name)
+        print(f"Run 'cc login {name}' when you are ready to sign in.")
+        return 0
+
+    if action in ("remove", "rm", "delete"):
+        name = rest[0] if rest else ""
+        if not name:
+            print("Usage: cc profile remove <name>", file=sys.stderr)
+            return 2
+        if sys.stdin.isatty():
+            confirm = input(f"Remove profile '{name}' and its credentials? [y/N]: ")
+            if confirm.strip().lower() not in ("y", "yes"):
+                print("Aborted.")
+                return 0
+        return profiles.remove(name)
+
+    print(f"Unknown profile action: {action}", file=sys.stderr)
+    return 2
+
+
+def cmd_switch(args):
+    names = profiles.list_profiles()
+    if not names:
+        print("No profiles configured. Run: cc profile add", file=sys.stderr)
+        return 1
+
+    target = profiles.normalize_name(args[0]) if args else ""
+
+    if not target:
+        # Pick a profile with evidence of free capacity. If none has evidence,
+        # say so rather than guessing - the old code treated "no data" as "free".
+        target = capacity.best()
+        if not target:
+            print(capacity.render())
+            print("\nNo profile has confirmed free capacity. Choose one explicitly:")
+            print("  cc switch <name>")
+            return 1
+
+    if target.isdigit():
+        index = int(target) - 1
+        if 0 <= index < len(names):
+            target = names[index]
+
+    if target not in names:
+        print(f"Profile '{target}' not found. Available: {', '.join(names)}",
+              file=sys.stderr)
+        return 1
+
+    profiles.set_active(target)
+    print(f"Active profile: {target} ({profiles.profile_email(target) or 'no email'})")
+    return 0
+
+
+def cmd_continue(args):
+    names = profiles.list_profiles()
+    target = ""
+    rest = list(args)
+
+    if rest and profiles.normalize_name(rest[0]) in names:
+        target = profiles.normalize_name(rest[0])
+        rest = rest[1:]
+
+    if not target:
+        target = capacity.best() or profiles.active_profile()
+
+    target, rc = require_profile(target)
+    if rc is not None:
+        return rc
+
+    profiles.set_active(target)
+    print(f"Resuming under '{target}'...")
+    return launcher.launch(target, rest, continue_session=True)
+
+
+def require_profile(name=None):
+    """Resolve a usable profile, or explain why there isn't one.
+
+    Returns ``(name, None)`` on success or ``(None, exit_code)`` when the caller
+    should stop. Every path that launches a session goes through this. Without
+    it, `cc -- <prompt>` and `cc continue` skipped the no-profile check, silently
+    created an unauthenticated 'main', and either launched into it or opened a
+    browser login the user never asked for.
+    """
+    if not profiles.list_profiles():
+        print("No profiles configured yet.", file=sys.stderr)
+        print("Create one with:  cc profile add", file=sys.stderr)
+        return None, 1
+
+    name = profiles.normalize_name(name or "") or profiles.active_profile()
+
+    if name not in profiles.list_profiles():
+        available = ", ".join(profiles.list_profiles())
+        print(f"Profile '{name}' does not exist. Available: {available}",
+              file=sys.stderr)
+        print("    Set one with: cc switch <name>", file=sys.stderr)
+        return None, 1
+
+    if not profiles.is_authenticated(name):
+        print(f"Profile '{name}' is not signed in.")
+        if profiles.login(name) != 0:
+            return None, 1
+
+    return name, None
+
+
+def cmd_ide(args):
+    action = args[0] if args else "check"
+    rest = args[1:]
+    if action == "check":
+        return ide.check(rest[0] if rest else None)
+    if action == "apply":
+        yes = "--yes" in rest or "-y" in rest
+        profile = next((a for a in rest if not a.startswith("-")), None)
+        return ide.apply(profile, dry_run=not yes)
+    print(f"Unknown ide action: {action}", file=sys.stderr)
+    return 2
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    if argv:
+        head = argv[0]
+        rest = argv[1:]
+
+        if head in ("--help", "help"):
+            print(USAGE)
+            return 0
+        if head in ("version", "--cc-version"):
+            print(f"Claude Cortex {VERSION}")
+            return 0
+        if head in ("profile", "profiles"):
+            return cmd_profile(rest)
+        if head == "login":
+            return profiles.login(rest[0] if rest else profiles.active_profile())
+        if head == "switch":
+            return cmd_switch(rest)
+        if head in ("status", "quota", "capacity", "limits"):
+            print(capacity.render())
+            return 0
+        if head == "continue":
+            return cmd_continue(rest)
+        if head == "doctor":
+            return doctor.report(repair="--repair" in rest)
+        if head == "ide":
+            return cmd_ide(rest)
+        if tools.is_tool(head):
+            return tools.run(head, rest)
+        if tools.is_retired(head):
+            return tools.explain_retired(head)
+
+        # Explicit prompt separator: everything after "--" goes to the CLI
+        # untouched, so a prompt can never collide with a command name.
+        if head == "--":
+            name, rc = require_profile()
+            if rc is not None:
+                return rc
+            return launcher.launch(name, rest)
+
+        # -<profile> selects a profile, e.g. cc -work
+        if head.startswith("-") and not head.startswith("--"):
+            candidate = profiles.normalize_name(head.lstrip("-"))
+            if candidate and candidate in profiles.list_profiles():
+                name, rc = require_profile(candidate)
+                if rc is not None:
+                    return rc
+                return launcher.launch(name, rest)
+
+            # Claude Code's own single-dash flags are all one character, and ours
+            # are listed above. So a multi-character -token that matched no
+            # profile is a mistyped profile name. Forwarding it starts a session
+            # that immediately dies on "unknown option" - having already signed
+            # in and spent a session start. Refuse here instead.
+            if len(head) > 2 and head not in launcher.MODEL_ALIASES \
+                    and head not in launcher.EFFORT_FLAGS \
+                    and head not in ("-t", "-y", "-e", "-r", "-s", "-o", "-H"):
+                available = ", ".join(profiles.list_profiles()) or "(none)"
+                print(f"cc: no profile named '{candidate}'.", file=sys.stderr)
+                print(f"    Available profiles: {available}", file=sys.stderr)
+                print(f"    To pass this to Claude instead: cc -- {head}",
+                      file=sys.stderr)
+                return 1
+
+        # bare profile name as the first argument
+        candidate = profiles.normalize_name(head)
+        if candidate and candidate in profiles.list_profiles() and not head.startswith("-"):
+            name, rc = require_profile(candidate)
+            if rc is not None:
+                return rc
+            return launcher.launch(name, rest)
+
+        # A single bare word that is neither a command nor a profile is almost
+        # always a mistyped command, not a prompt. Launching a session for it
+        # spends real tokens answering a typo, so refuse and explain instead.
+        # A genuine one-word prompt is still possible with -- or quoting.
+        if (not head.startswith("-") and " " not in head
+                and not any(a for a in rest if not a.startswith("-"))):
+            print(f"cc: unknown command '{head}'.", file=sys.stderr)
+            close = [c for c in list(TOP_LEVEL_COMMANDS) + profiles.list_profiles()
+                     if c.startswith(head[:3])]
+            if close:
+                print(f"    Did you mean: {', '.join(sorted(set(close))[:5])}?",
+                      file=sys.stderr)
+            print(f"    To send it to Claude as a prompt: cc -- {head}",
+                  file=sys.stderr)
+            print("    To see available commands:        cc --help", file=sys.stderr)
+            return 2
+
+    name, rc = require_profile()
+    if rc is not None:
+        return rc
+
+    return launcher.launch(name, argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
