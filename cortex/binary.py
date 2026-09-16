@@ -108,7 +108,6 @@ def find(verify=True):
 
 def _resolve(verify):
     seen = set()
-    fallback = None
     for cand in _candidates():
         text = str(cand)
         if text in seen or not os.path.exists(cand):
@@ -120,12 +119,17 @@ def _resolve(verify):
             return text
         if _runs(cand):
             return text
-        if fallback is None:
-            fallback = text
 
-    # Nothing verified as runnable; hand back a plausible path so the caller can
-    # produce a specific error rather than a generic "not found".
-    return fallback
+    # Nothing runs. Return None rather than a plausible-looking path.
+    #
+    # This used to hand back the first candidate that existed but did not run,
+    # on the theory that the caller could produce a more specific error. In
+    # practice callers exec'd it, and the operator saw
+    # "Permission denied: .../versions/2.1.273" - which points at a file they
+    # have no reason to care about and says nothing about the actual problem.
+    # A clean None lets every caller say "no working Claude Code binary" and
+    # point at `cc doctor`, which lists each candidate and why it was rejected.
+    return None
 
 
 def reset_cache():

@@ -270,7 +270,11 @@ def login(name: str) -> int:
 
     exe = binary.find()
     if not exe:
-        print("No working Claude Code binary found. Run 'cc doctor' for details.")
+        print("No working Claude Code binary found.", file=__import__("sys").stderr)
+        print("    Run 'cc doctor' to see each candidate and why it was rejected.",
+              file=__import__("sys").stderr)
+        print("    Or install Claude Code from https://claude.ai/download",
+              file=__import__("sys").stderr)
         return 1
 
     env = dict(os.environ)
