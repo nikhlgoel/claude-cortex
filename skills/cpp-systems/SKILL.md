@@ -1,24 +1,12 @@
+---
+name: cpp-systems
+description: Modern C++20 systems engineering: RAII, move semantics, const correctness, zero-allocation hot paths. Use when writing, reviewing, or debugging C++.
+---
+
 ﻿# C++ Systems Engineering & Competitive Programming Standards
 
 This rule applies automatically whenever writing, analyzing, or reviewing C++ code, data structures, algorithms, or LeetCode problems.
 
----
-
-## 1. Core Language Standards (Modern C++20)
-
-- **Standard:** Use modern C++20 conventions. Avoid C-style idioms (`malloc`, `free`, raw arrays, C-strings).
-- **Memory Safety & RAII:**
-  - Resource Acquisition Is Initialization (RAII) everywhere.
-  - Never use raw `new` and `delete`. Use standard containers (`std::vector`, `std::string`, `std::array`) or smart pointers (`std::unique_ptr`, `std::shared_ptr`).
-  - Pass read-only strings by `std::string_view` to eliminate heap allocations.
-  - Pass read-only contiguous sequences by `std::span`.
-- **Const Correctness:**
-  - Mark all non-mutating member functions `const`.
-  - Pass heavy objects by `const Type&`.
-  - Use `constexpr` or `consteval` for compile-time computations.
-- **Move Semantics:** Use `std::move` when transferring ownership into containers or members.
-
----
 
 ## 2. LeetCode & Competitive Programming Problem Structure
 

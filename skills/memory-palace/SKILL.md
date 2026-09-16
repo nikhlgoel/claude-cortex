@@ -1,7 +1,8 @@
 ---
 name: memory-palace
-description: Cognitive memory architecture for human-like retention of architecture, procedures, pitfalls, and decisions.
+description: Store and recall project lessons, architectural decisions, and solved bugs across sessions. Use before non-trivial work on a familiar codebase, and after solving something worth remembering.
 ---
+
 
 # Cognitive Memory Palace Rule
 

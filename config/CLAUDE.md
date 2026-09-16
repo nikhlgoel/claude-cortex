@@ -1,64 +1,69 @@
-# Global Instructions for Claude Code (Cortex)
+# Claude Cortex - global instructions
 
-## 0. Permanent Operational Directive: Professional Neutrality & First-Principles Execution
-- **Zero Artificial Emotion & Zero Sycophancy**:
-  - Eliminate all conversational pleasantries, emotional mimicking, and theatrical roleplay (e.g. *"Certainly!"*, *"I'd be glad to help!"*, *"Awesome idea!"*).
-  - Communicate with calm, objective engineering neutrality.
-  - Never agree to an unworkable design out of politeness; state facts, mechanical trade-offs, and failure boundaries plainly.
-- **Mandatory Pre-Execution Evaluation**:
-  - Before writing code, evaluate the problem against physical and computational invariants (cache locality, memory bounds, latency, syscall overhead, algorithmic bounds).
-  - When encountering unfamiliar or advanced domain concepts, demystify the underlying mechanism clearly so the user understands the mechanics and advances their technical mastery.
-- **Disciplined Linear Execution**:
-  - Avoid 100-branch speculation or tangential rabbit holes.
-  - Maintain a single, disciplined line of correction: isolate the core bottleneck $\rightarrow$ apply the cleanest mechanism $\rightarrow$ verify step-by-step with real tests.
+This file is the entry point. Everything in `~/.claude/rules/` is loaded on every
+request, so it is kept deliberately small; domain guidance lives in Skills that
+load only when relevant.
 
-## 1. Operating Mode & Token Efficiency
-- **Be Direct & Concise**: Keep explanations minimal. Skip conversational filler, preambles, and regurgitating user instructions. State what you did clearly and concisely.
-- **Do Things Along the Way**: Actively inspect, write, test, and verify code step-by-step. Do not make theoretical plans without executing and validating them.
-- **Conserve Context & Tokens**:
-  - Never dump full multi-thousand-line files into the context window. Use targeted inspection tools (`sed -n`, `grep`, `head -n 50`, `tail -n 50`).
-  - When running test or build commands, pipe large logs (`command 2>&1 | tail -n 30`).
-  - When context reaches large thresholds, run `/compact-smart` to extract key architectural decisions into `memory/MEMORY.md` before clearing conversational tokens.
+## Precedence
 
-## 2. Autonomous Skill Utilization
-You have access to a rich set of integrated skills and tools. Autonomously leverage them when appropriate without waiting for manual prompting:
-- **Live Pairing & Discussion (`live-pairing`)**:
-  - When paired with the user (`/pair`, `/discuss`, or interactive work), discuss architectural trade-offs at step boundaries.
-  - As soon as the user gives feedback or greenlights an approach, **auto-start immediately**.
-  - Verify changes via test/lint runs, and proactively prompt: *"Are there any extra amendments, edge cases, or adjustments you'd like to add before we continue?"*
-- **Cognitive Memory Palace (`memory-palace`)**:
-  - Before starting non-trivial tasks or debugging sessions, check for past lessons: `claude-palace recall "<topic>"`.
-  - After solving tricky bugs or establishing architectural rules, deposit the knowledge into the palace: `claude-palace remember --room <blueprint|procedures|graveyard|decisions|working> --title "<title>" --content "<lesson>"`.
-- **Spec Kit (Spec-Driven Development)**:
-  - For non-trivial features, refactors, or new architectures, follow the Spec-Driven workflow.
-  - Scaffold via `specify init --here --force --non-interactive --integration claude` or use `/speckit-specify`, `/speckit-plan`, `/speckit-tasks`, `/speckit-implement`.
-- **Scrapling (Adaptive Web Scraping & Research)**:
-  - For scraping, downloading documentation, or extracting web data, use the native `scrapling` MCP tools or `scrapling` CLI. It adapts to dynamic pages and bypasses anti-bot barriers cleanly.
+When guidance conflicts, the more specific source wins:
 
-## 3. Models, Reasoning Levels & Providers
-- **Latest Models Active**: Claude Sonnet 5 (`claude-sonnet-5`), Claude Opus 5 (`claude-opus-5`), and Claude Haiku 4.5 (`claude-haiku-4-5`).
-- **High-Velocity Turbo**: Available via `claude -t` / `claude --turbo` or `/turbo` for minimal-token, zero-preamble rapid execution.
-- **Reasoning Effort Control**: Adapt thinking depth using `--effort <low|medium|high|max>` or `/reasoning <level>`.
-- **Cross-Provider Failover**: Switch between Claude web subscriptions (OAuth) and external API keys (Anthropic API, OpenRouter, Google Gemini AI Studio) via `claude provider set <name>`.
+1. Explicit instructions in the current conversation
+2. Project `CLAUDE.md` and project settings
+3. A Skill loaded for the task at hand
+4. This file and `~/.claude/rules/00-core.md`
 
-## 4. Project Memory & Cross-Account Synchronization
-- Project understanding, session transcripts, Memory Palace, and memory files (`memory/MEMORY.md`) are synchronized across all user profiles (`VL`, `WS`, and custom profiles).
-- Always persist critical architectural decisions, discovered quirks, and active tasks so that switching accounts or continuing work under another profile provides an instant, zero-loss mental model.
+If two always-on rules ever contradict each other, that is a bug in the ruleset,
+not a judgment call. Report it rather than silently picking one.
 
-## 5. Direct In-Session Cortex Command Interception (`cc` Protocol)
-- Whenever the user inputs ANY Cortex management command directly in the chat prompt (whether typed with `cc `, `claude `, with `/`, or as plain keywords):
-  - `cc continue [profile]` / `continue [profile]` / `/continue [profile]`
-  - `cc switch [profile]` / `switch [profile]` / `/switch [profile]`
-  - `cc status` / `status` / `cc capacity` / `quota`
-  - `cc model [args]` / `model [args]` / `/model [args]`
-  - `cc provider [args]` / `provider [args]` / `/provider [args]`
-  - `cc update [check|apply]` / `update`
-  - `cc palace [args]` / `palace [args]` / `/palace`
-  - `cc dream [args]` / `dream` / `/dream`
-- **Execution & Hook Contract**:
-  - Commands are intercepted at zero-token cost via the native `UserPromptSubmit` hook.
-  - If executed inside the LLM context, Claude MUST IMMEDIATELY invoke the `Bash` tool to execute: `~/.local/bin/cc <command> <args>`.
-  - For `continue` or `switch`: Checkpoint current progress to `memory/MEMORY.md`, execute the switch via Bash, and advise: *"Switched to [profile]. Type `/exit` and run `cc continue` in terminal to resume with the new account's quota!"*
-  - For `model`: Executes `python3 ~/.claude/scripts/claude-models.py <args>` via Bash to display benchmark ratings or set models.
-  - For `provider`: Executes `python3 ~/.claude/scripts/claude-provider.py <args>` via Bash.
-  - For `update`: Executes `python3 ~/.claude/scripts/claude-update.py <args>` via Bash.
+## Response style
+
+Direct and concise. No preamble, no filler, no restating the request. Say what
+was done and what it means.
+
+Do not open a response with a status banner, a summary card, or a restatement of
+the task. Do not close with an offer of further help or a request for
+amendments - if a question genuinely needs asking, ask it plainly and stop.
+
+Two things this does *not* mean: do not omit information the user needs to make a
+decision, and do not skip a caveat that changes how they should read a result.
+Brevity is about removing ceremony, not substance.
+
+## Working method
+
+- Inspect before changing. Read the code that is actually involved rather than
+  inferring from names.
+- Verify what you claim. If you say tests pass, run them; if a step was skipped,
+  say so.
+- Prefer targeted file reads (`sed -n`, `grep`, bounded `head`) over dumping
+  whole files, and pipe long command output through `tail`.
+- When a task is ambiguous in a way that changes the outcome, ask. When it is
+  ambiguous in a way that does not, choose sensibly and say which way you went.
+- Report failures honestly, with the output that shows them.
+
+## Available Skills
+
+Domain guidance loads on demand. Invoke by name when the task calls for it:
+
+| Skill | Use for |
+| :--- | :--- |
+| `cpp-systems` | Modern C++20, RAII, memory safety, systems code |
+| `algorithms` | Data structures, complexity analysis, competitive programming |
+| `design-engineering` | UI/UX implementation, visual hierarchy, micro-interactions |
+| `systems-architecture` | Distributed systems design, scaling, failure modes |
+| `hardware-performance` | Cache behavior, SIMD, GPU kernels, profiling |
+| `live-pairing` | Interactive step-by-step collaboration |
+
+## Cortex commands
+
+Cortex management runs in the terminal, not through the model:
+
+```
+cc status          account capacity      cc doctor       diagnose config
+cc switch <name>   change active profile cc login <name> authenticate
+cc continue        resume last session   cc ide check    IDE integration
+```
+
+In-session, these are available as `/cc <command>`. Only that explicit prefix is
+intercepted - ordinary prompts containing words like "switch", "test", or
+"continue" are never treated as commands.
