@@ -196,6 +196,7 @@ scenario_list() {
     echo "  precedence         a checkout beats the installed copy"
     echo "  dream              output depends on the code analysed"
     echo "  mcp                tools exposed, subscription untouched by registration"
+    echo "  instinct           learned-patterns store works standalone"
     echo "  ide-wrapper        extension calling convention is honoured"
     echo "  install-uninstall  official Claude Code survives an uninstall"
     echo "  rules-budget       always-on prompt payload stays small"
@@ -262,6 +263,7 @@ case "$SCENARIO" in
     precedence)        scenario_script_precedence ;;
     dream)             scenario_dream_real ;;
     mcp)               scenario_mcp ;;
+    instinct)          scenario_instinct ;;
     all)
         scenario_smoke
         scenario_install_dryrun
@@ -301,6 +303,7 @@ case "$SCENARIO" in
         scenario_script_precedence
         scenario_dream_real
         scenario_mcp
+        scenario_instinct
         ;;
     *)
         echo "Unknown scenario: ${SCENARIO}" >&2

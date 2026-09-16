@@ -1826,3 +1826,64 @@ sys.exit(1)
 
     unset CORTEX_PROFILES_DIR
 }
+
+# --------------------------------------------------------------------------
+# The instinct store is the Cortex-native fallback that makes the /instinct-*
+# commands work when the ECC continuous-learning plugin is not installed. It
+# writes to a home subtree, so it is tested here where HOME is real and
+# disposable - never on the host.
+# --------------------------------------------------------------------------
+scenario_instinct() {
+    banner "INSTINCT: learned patterns store works standalone"
+
+    export CORTEX_INSTINCT_ROOT="${SANDBOX_DIR}/homunculus"
+    local cli="${WORK}/scripts/instinct-cli.py"
+
+    # Empty store reports zero and suggests how to add.
+    local out
+    out=$(python3 "$cli" status 2>&1)
+    if [[ "$out" == *"0 total"* ]]; then
+        pass "empty store reports zero"
+    else
+        fail "empty store output unexpected -> $(head -2 <<< "$out")"
+    fi
+
+    # Add project and global instincts.
+    python3 "$cli" add workflow "grep before editing" --trigger "modifying code" --confidence 0.7 >/dev/null 2>&1
+    python3 "$cli" add security "validate input" --scope global --confidence 0.85 >/dev/null 2>&1
+    out=$(python3 "$cli" status 2>&1)
+    if [[ "$out" == *"2 total"* ]]; then
+        pass "records project and global instincts"
+    else
+        fail "add did not persist -> $(grep total <<< "$out")"
+    fi
+
+    # Confidence changes with reinforcement.
+    python3 "$cli" reinforce workflow-grep-before-editing >/dev/null 2>&1
+    out=$(python3 "$cli" status 2>&1)
+    if [[ "$out" == *"80%"* ]]; then
+        pass "reinforce raises confidence (70 -> 80)"
+    else
+        fail "reinforce did not change confidence"
+    fi
+
+    # Export/import round-trips.
+    python3 "$cli" export --out "${SANDBOX_DIR}/inst.json" >/dev/null 2>&1
+    export CORTEX_INSTINCT_ROOT="${SANDBOX_DIR}/homunculus2"
+    out=$(python3 "$cli" import "${SANDBOX_DIR}/inst.json" --scope global 2>&1)
+    if [[ "$out" == *"imported 2"* ]]; then
+        pass "export/import round-trips 2 instincts"
+    else
+        fail "round-trip failed -> $out"
+    fi
+
+    # A hostile domain is rejected, not stored silently.
+    out=$(python3 "$cli" add notadomain "x" 2>&1)
+    if [[ "$out" == *"Unknown domain"* ]]; then
+        pass "rejects an unknown domain"
+    else
+        fail "accepted an invalid domain"
+    fi
+
+    unset CORTEX_INSTINCT_ROOT
+}
