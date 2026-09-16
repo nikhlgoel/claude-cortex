@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """
+NOTE: this script generates a fixed review FRAMEWORK - a checklist of failure
+categories to reason against. It performs no analysis of its own and makes no
+model or network calls; the output is identical for any topic. The analysis is
+done by Claude, using this as the frame. Earlier documentation described it as a
+simulation engine, which it is not.
+
 Claude Cortex - Cognitive Dream Simulation Engine (REM Mode)
 Replicates the human brain's Default Mode Network & REM sleep generative simulation:
 Runs fast, unconstrained counterfactual scenario modeling across 4 dimensions:
@@ -97,7 +103,7 @@ def run_simulation(chambers=None, target_path=None, topic=""):
         chambers_to_run = list(dict.fromkeys(chambers_to_run))
 
     print("======================================================================")
-    print("           💤 Entering Claude Code Dream Simulation (REM Mode)")
+    print("           Dream Engine - counterfactual review framework")
     print("======================================================================")
     print(f"Timestamp: {now_str}")
     print(f"Focus:     {topic or target_path or 'Entire Project Architecture'}")

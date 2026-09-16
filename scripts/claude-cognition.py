@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+NOTE: this script emits a fixed reasoning SCAFFOLD. It makes no model calls and
+performs no reasoning itself; Claude does the thinking, using this structure.
+
 Claude Cortex - Cognitive Elevation & Dialectical Smart Reasoner v1.0
 Elevates AI agent intelligence from median pattern-matching ("capable")
 to higher-order first-principles cognition ("smart"):

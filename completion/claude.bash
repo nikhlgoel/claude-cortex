@@ -6,8 +6,8 @@ _claude_completions() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    local subcommands="continue switch docs status quota clean profile login menu whoami dream palace remember recall provider model update test bench reasoning effort research discovery think smart cognition turbo fast"
-    local flags="-y --yes -s --sonnet -o --opus -h --haiku -t --turbo --fast -d --dream -e --effort -r --reasoning --think-low --think-med --think-high --think-max --think-off --provider --api-key -m --menu --help --version --print --resume --dangerously-skip-permissions"
+    local subcommands="continue switch status quota capacity limits profile login doctor ide version help palace remember recall dream research think smart model models provider update"
+    local flags="-y --yes -s --sonnet -o --opus -H --haiku -t --turbo --fast -e --effort -r --reasoning --think-low --think-med --think-high --think-max --think-off --help --version --print --resume --continue --dangerously-skip-permissions --"
     
     # Dynamically gather configured profiles
     local profiles=()

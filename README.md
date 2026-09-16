@@ -1,253 +1,202 @@
-# Claude Cortex (`cc`) 🚀
-### Multi-Account Manager, Cognitive Memory Palace, Dream Simulation, Autonomous Rate-Limit Failover & API Proxy Suite
+# Claude Cortex (`cc`)
 
-A unified, production-grade toolkit for **Claude Code** that unlocks:
-- **Ultra-Fast `cc` Command Prefix**: Universal shorthand for all commands (`cc`, `cc continue`, `cc model`, `cc update`, `cc palace`, `cc effort`).
-- **Dual & Multi-Account Management**: Run `cc -ws` and `cc -vl` simultaneously or switch with `cc switch ws`.
-- **Autonomous Capacity-Aware Failover**: When accounts hit rate limits, `cc continue` automatically scans all configured accounts, detects exact reset countdowns, finds an account with remaining capacity, switches to it, and resumes your session with zero context loss!
-- **Unified Ecosystem Updater (`cc update`)**: Single-command updater that tracks and updates Claude Code CLI, the VS Code extension (`anthropic.claude-code`), connected UV tools (`specify-cli`, `scrapling`), and the Claude Cortex repository.
-- **6-Pillar Advanced Token Conservation Protocol**: Prompt cache stabilization (90%+ cache hits), surgical line-bounded file views, terminal noise filtering, lossless PreCompact memory anchoring, and zero-fluff dense signal protocol.
-- **Interactive TUI Model Selector with Full Mouse & Keyboard Control**: Browse models, scroll with mouse wheel, click to select, view comprehensive token pricing matrices ($/1M input/output, cache hit rates, 100-turn session cost estimates), and benchmarks (`cc model`).
-- **Cognitive Memory Palace v2.0**: Neuroscience-grounded long-term memory with inverted tag indexing, room-based storage (`blueprint`, `procedures`, `graveyard`, `decisions`, `working`), and autonomous recall before tasks.
-- **Cognitive Dream Simulation Engine**: Replicates REM Sleep / Default Mode Network. Simulates counterfactual worst-case scenarios and stress tests across 4 chambers: Technical/Security, Business/Economics, Psychological/UX, and Creative leaps (`cc dream` / `/dream`).
-- **Latest Model Shortcuts & Reasoning Control**: Native aliases pointing to `claude-sonnet-5` (`-s`), `claude-opus-5` (`-o`), `claude-haiku-4-5` (`-h`) and explicit thinking effort controls (`--effort <low|medium|high|max>`, `cc effort <level>`).
-- **Live Pairing & Discussion Mode**: Interactive co-pilot workflow (`/pair`, `/discuss`) that halts at architectural inflection points, debates trade-offs, auto-starts approved plans, and proactively prompts for follow-up amendments.
-- **External API Providers & Fallback Proxy**: When subscriptions expire, seamlessly continue via Anthropic API, OpenRouter.ai, or Google Gemini AI Studio with streaming translation (`gemini-proxy.py`).
-- **Tab Autocompletion & Interactive Menu**: Autocompletes commands, profiles, models, and flags in Bash/Zsh; includes an interactive visual menu (`cc menu`).
+Multi-account profile manager and launcher for [Claude Code](https://claude.ai/code).
+
+Run several Claude accounts side by side with fully isolated credentials, switch
+between them, and keep IDE and terminal sessions on the same profile.
 
 ---
 
-## 💻 1-Click Installation
+## What it does
 
-### On Linux & macOS:
-1. Extract the package:
-   ```bash
-   tar -xzf claude-cortex.tar.gz
-   cd claude-cortex
-   ```
-2. Run the installer (creates automated backup first, then performs clean setup):
-   ```bash
-   ./install.sh
-   ```
-3. Restart your terminal or reload your shell:
-   ```bash
-   source ~/.bashrc   # (or: source ~/.zshrc)
-   ```
+- **Multi-account profiles.** Each profile is an isolated `CLAUDE_CONFIG_DIR`
+  with its own credentials, quota, and session history. `cc -work`, `cc -personal`.
+- **Shared project context.** In *synced* mode profiles share projects, skills,
+  commands, and rules; only credentials and usage are separate.
+- **Consistent identity across entry points.** Terminal, PowerShell, and IDE
+  sessions all resolve the same canonical config-dir string, so they share one
+  credential namespace. This matters more than it sounds - see *Why paths matter*.
+- **Capacity reporting.** `cc status` shows per-account usage where Claude Code
+  has recorded it, and says *unknown* where it has not.
+- **Diagnostics.** `cc doctor` explains why a setup is misbehaving and
+  `--repair` fixes the unambiguous cases.
+- **IDE integration.** Configures VS Code, Antigravity, Cursor, Windsurf, and
+  VSCodium to launch under a chosen profile, without modifying the extension.
+- **Lifecycle hooks.** Guards against tool calls that dump huge output into
+  context, and preserves architectural context across compaction.
+- **On-demand Skills.** Domain guidance (C++, algorithms, design, architecture,
+  hardware) loads when relevant instead of on every request.
 
-### On Windows:
-1. Extract `claude-cortex.zip`.
-2. Choose ANY of the convenient installation methods:
-   - **Method A (Easiest - 1-Click Executable)**: Double-click **`install.exe`**
-   - **Method B (1-Click Batch Script)**: Double-click **`install.cmd`**
-   - **Method C (PowerShell with Auto-Bypass)**: Open PowerShell in the folder and run:
-     ```powershell
-     powershell -ExecutionPolicy Bypass -File .\install.ps1
-     ```
-   - **Method D (Pure Python)**:
-     ```powershell
-     python install.py
-     ```
-3. Open a new PowerShell window, Command Prompt, or Windows Terminal.
+## Requirements
 
-> [!NOTE]
-> **Automatic Official Claude Code Migration**: The Windows installer automatically detects any previous official Claude Code installations (e.g. from `irm https://claude.ai/install.ps1 | iex` or npm), cleanly creates a safe pre-install backup archive, preserves the official binary as `claude.real.exe`, removes conflicting residue, and **restores your active login session and project history** so you remain logged in with zero interruption!
+- Claude Code installed ([claude.ai/download](https://claude.ai/download))
+- Python 3.8+
+- bash or zsh (Linux/macOS), PowerShell (Windows)
 
----
+## Install
 
-## ⚡ Quick Start & Commands
-
-### 1. Multi-Account Launching
 ```bash
-claude -ws               # Launch using WS account
-claude -vl               # Launch using VL account
-claude -work             # Launch using custom profile (e.g. work, client)
-claude -1 / claude -2    # Launch by profile index
-claude                   # Launch using active default profile
+./install.sh --dry-run    # see exactly what it will change
+./install.sh              # asks for confirmation before touching anything
 ```
 
-### 2. Autonomous Rate-Limit Failover (`claude continue`)
-When your active account hits an Anthropic rate limit:
-```bash
-claude continue
-```
-Claude Code automatically:
-1. Scans every account in `~/.claude-profiles/`.
-2. Checks 5-hour and 7-day rate limits and active quota warnings.
-3. Automatically identifies an account with free capacity.
-4. Switches active credentials and resumes the exact session with `--continue`!
+Windows:
 
-### 3. Latest Models & Reasoning Effort
-```bash
-claude -s                # Launch Claude Sonnet 5 (claude-sonnet-5)
-claude -o                # Launch Claude Opus 5 (claude-opus-5)
-claude -h                # Launch Claude Haiku 4.5 (claude-haiku-4-5)
-claude -e high           # Set reasoning effort (low, medium, high, max)
-claude --think-high      # Deep reasoning effort shortcut
-claude --think-off       # Disable reasoning for rapid responses
-claude reasoning high    # Save default reasoning effort in settings.json
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-### 4. Cognitive Memory Palace v2.0
-Human-like long-term retention of architecture, bugs, and decisions:
+The installer will not run non-interactively without `--yes` or
+`CORTEX_SANDBOX=1`, because it replaces the `claude` command on your PATH and
+writes lifecycle hooks. It never moves or deletes your official Claude Code
+installation.
+
+## Usage
+
 ```bash
-claude palace            # View palace status, room metrics, and indexed tags
-claude palace map        # Detailed breakdown of all rooms
-claude remember <room> <notes>  # Store lesson (rooms: blueprint, procedures, graveyard, decisions)
-claude recall <topic>    # Search palace memories using inverted tag indexing
+cc                          # launch the active profile
+cc -work                    # launch a specific profile
+cc profile add work         # create a profile
+cc login work               # sign in
+cc switch work              # change the active profile
+cc status                   # account capacity
+cc continue                 # resume the last conversation
+cc doctor                   # diagnose problems
+cc doctor --repair          # fix the unambiguous ones
+
+cc -s | -o | -H             # Sonnet 5 | Opus 5 | Haiku 4.5
+cc -e high                  # reasoning effort: low medium high xhigh max
+cc -t                       # turbo: Haiku at low effort
+cc -y                       # skip permission prompts
+cc -- <prompt>              # send a prompt even if it looks like a command
 ```
 
-### 5. Cognitive Dream Engine (Stress Testing)
-Simulate counterfactual scenarios and hunt edge cases before production:
-```bash
-claude dream             # Full 4-chamber simulation on current project context
-claude dream --quick     # Fast 2-chamber sanity check
-claude dream run --topic "multi-tenant billing" --chambers tech,security
-```
-Chambers:
-- **Technical/Security Crucible**: Concurrency races, OOM leaks, rate limit thrashing, injection vectors.
-- **Business/Economic Stress**: Churn spikes, API overuse cost explosions, pricing friction.
-- **Psychological/UX Friction**: Cognitive overload, misleading CLI output, confusing error states.
-- **Creative & Divergent Leaps**: 10x architectural simplifications and lateral ideas.
+Tools:
 
-### 6. External API Providers & Key Setup (One-Time)
-Configure fallback providers cleanly without confusing API keys and model names:
 ```bash
-claude provider status                # Check configured providers & active endpoints
-claude provider set openrouter        # Switch active provider to OpenRouter
-claude provider key openrouter sk-or-v1-...  # Set API key securely
-claude provider set gemini            # Switch to Google Gemini AI Studio
-claude provider key gemini AIzaSy...  # Set Gemini API key
-claude provider set oauth             # Return to standard Claude Code subscription
+cc palace | remember | recall    # memory palace (stores and retrieves)
+cc model | provider | update     # model catalog, API providers, updates
+cc research <topic>              # live arXiv retrieval (real)
+cc dream | think                 # review scaffolds - see limitations below
 ```
 
-### 7. Interactive Keyboard TUI Model Selector & Benchmark Dossier
-Navigate models seamlessly with keyboard arrows, evaluate benchmarks in real-time modals, and switch models dynamically:
-```bash
-claude model                          # Launch live interactive TUI model browser
-claude model free                     # Launch TUI filtered to 100% FREE models (0 credits needed)
-claude model list                     # Print non-interactive table of models for active provider
-claude model set <model_id>           # Switch model directly (e.g. claude model set deepseek/deepseek-r1:free)
-claude model info <model_id>          # Open full evaluation dossier modal (benchmarks, latency, context)
-claude --free                         # Launch Claude Code immediately using the top free model
+An unrecognized command is refused with a suggestion rather than being sent to
+Claude as a prompt. An earlier version forwarded twelve legacy subcommands
+(`docs`, `menu`, `palace`, ...) straight into a session, spending tokens to
+answer the command word.
+
+In-session, Cortex commands use an explicit `/cc` prefix:
+
+```
+/cc status
+/cc switch work
 ```
 
-**TUI Keyboard Controls**:
-- **`[↑] / [↓]` Arrow Keys**: Move highlight cursor across models.
-- **`[Shift]` / `[Tab]` / `[i]` / `[Space]`**: Open **Evaluation Dossier Modal** showing SWE coding ratings, MMLU reasoning benchmarks, token generation latency, context limits, architecture type, and optimal task assignment.
-- **`[Esc]`**: Exit modal popup or close model picker keeping current configuration.
-- **`[f]`**: Instant toggle between 100% Free models (OpenRouter) and all frontier models.
-- **`[Enter]`**: Select and activate the highlighted model instantly.
+Only that prefix is intercepted. Ordinary prompts containing words like
+"switch", "test", or "continue" are never treated as commands.
 
-### 8. Claude Desktop Native MCP Integration
-Claude Cortex ships with a native Model Context Protocol (MCP) server (`cortex-mcp.py`) automatically configured into `claude_desktop_config.json`:
-- **Direct GUI Tool Access**: Use Claude Desktop GUI to query Cortex status, switch between work and personal profiles, switch models, consult the Cognitive Memory Palace, and run dream simulations.
-- **Native Tools Available**: `cortex_status`, `cortex_switch`, `cortex_model`, `cortex_provider`, `cortex_palace`, `cortex_dream`.
-- **Zero Config**: Automatically registers across default and multi-profile desktop configurations (`Claude`, `claude-profile-1`, `claude-profile-2`).
+## IDE integration
 
-### 9. Multi-IDE Extension Auto-Configuration Wizard
-During installation, Cortex automatically scans and configures the Claude Code extension (`anthropic.claude-code`) across all installed IDEs:
-- **Supported Environments**: **VS Code**, **Google Antigravity**, **Cursor**, **VSCodium**, **Windsurf**.
-- **Transparent Wrapping**: Automatically injects `"claudeCode.claudeProcessWrapper"` into each IDE's `settings.json` without modifying any of your custom user preferences or themes.
-- **Automatic Extension Setup**: Automatically installs or verifies the extension if the IDE's CLI tool is available on PATH.
-
-### 10. In-Session Command Execution (Inside Active Prompt `❯`)
-You can run any Cortex command directly inside an active session prompt (whether typed with `claude `, with `/`, or as plain keywords):
-- `claude continue vl` or `/continue vl`: Checkpoints progress to `MEMORY.md`, auto-switches account, and displays exact resume instruction.
-- `claude switch ws` or `/switch ws`: Switches active account seamlessly.
-- `claude model` or `/model`: Opens model catalog and benchmarks inside the session.
-- `claude provider status` or `/provider`: Views or updates API keys inside the session.
-- `claude status` or `/status`: Displays live capacity and rate-limit countdowns.
-
-### 9. Account Capacity Dashboard
 ```bash
-claude status            # Full multi-account overview with live quota & capacity
-claude quota             # Alias for capacity dashboard
+cc ide check          # report what is installed and what would change
+cc ide apply          # dry run
+cc ide apply --yes    # write the settings
 ```
 
-### 10. Switching Active Default Account
-```bash
-claude switch ws         # Sets WS as default
-claude switch vl         # Sets VL as default
-claude switch            # Automatically switches to the account with free capacity
+This sets `claudeCode.environmentVariables` so the extension launches under your
+chosen profile. **No extension files are modified**, so Anthropic's updates never
+break it.
+
+Cortex also ships `cortex-ide-wrapper` for the `claudeCode.claudeProcessWrapper`
+setting, which correctly implements the extension's calling convention
+(`wrapper <real-binary> [args...]`). Prefer environment variables: setting a
+process wrapper disables the extension's permission-mode resolution and its
+`CLAUDE_CONFIG_DIR` watching.
+
+## Why paths matter
+
+Claude Code namespaces stored credentials by a hash of the config-directory
+*string*, normalized NFC and nothing else. These are three different accounts:
+
+```
+C:\Users\me\.claude-profiles\main
+/c/Users/me/.claude-profiles/main
+C:/Users/me/.claude-profiles/main/
 ```
 
-### 11. Adding New Profiles (Synced or Isolated)
+Git Bash and PowerShell naturally produce different spellings for the same
+directory, which is why a profile could be signed in from one shell and appear
+signed out from the other. Cortex derives every config-dir string from a single
+canonicalizer so all entry points agree.
+
+## Uninstall
+
 ```bash
-claude profile add
+./uninstall.sh                        # dry run
+./uninstall.sh --yes                  # remove Cortex
+./uninstall.sh --yes --purge-profiles # also remove saved logins
 ```
-- **Synced** (Recommended): Shares project conversations, Memory Palace, custom skills, and commands. Quotas and credentials remain completely independent.
-- **Isolated**: Independent sandbox for client work.
 
----
+It removes only files Cortex installed. Your official Claude Code binary, IDE
+extensions, Claude Desktop, `~/.claude.json`, and your own `~/.claude` content
+are left alone.
 
-## 🛠️ In-Session Slash Commands
+## Testing
 
-Inside any active Claude Code prompt shell:
+All testing runs in containers; nothing touches a real installation.
 
-| Command | Description |
+```bash
+make sandbox          # full suite on Fedora
+make sandbox-ubuntu   # full suite on Ubuntu
+make sandbox-pwsh     # adds PowerShell, so the Windows shim is executed
+make sandbox-all      # every scenario on every image
+make sandbox-list     # available scenarios
+```
+
+Windows parity is executed, not assumed: the PowerShell shim runs under `pwsh`
+and is asserted to resolve a config directory byte-identical to bash. That is
+the property the credential-namespace bug turned on.
+
+Every scenario ends with a filesystem leak check that fails on any change it did
+not declare. See [tests/sandbox/README.md](tests/sandbox/README.md).
+
+## Honest limitations
+
+- **`cc dream` and `cc think` do not analyze anything.** They print fixed
+  checklists for Claude to reason against. `dream`'s output is identical
+  regardless of topic; `think`'s varies only by the echoed prompt. They are
+  scaffolds, not engines.
+### What is real, audited rather than assumed
+
+| Feature | Verdict |
 | :--- | :--- |
-| `/continue [prof]` | Scans capacity, switches account, checkpoints session memory, and prepares continuation. |
-| `/model [args]` | Interactive model selector with benchmarks, context window, and Free vs Paid filters. |
-| `/provider [args]`| Manages fallback API keys and endpoints (Anthropic, OpenRouter, Gemini). |
-| `/quota` / `/status` | Displays real-time 5-hour and 7-day utilization and reset countdowns across all accounts. |
-| `/switch [prof]` | Flushes session memory and switches the active default profile. |
-| `/palace` | Displays Memory Palace room status, storage stats, and indexed tags. |
-| `/remember [room]` | Stores a hard-won bugfix, architectural rule, or decision into the Palace. |
-| `/recall <topic>` | Recalls lessons, architectural boundaries, or edge cases from the Palace. |
-| `/dream [topic]` | Simulates counterfactual edge cases and auto-consolidates insights into the Palace. |
-| `/pair` | Activates Live Pairing mode to discuss trade-offs, auto-implement, and review amendments. |
-| `/discuss` | Starts interactive brainstorming on design, security, or architecture. |
-| `/reasoning <lvl>`| Sets thinking effort level (`low`, `medium`, `high`, `xhigh`, `max`). |
-| `/compact-smart` | Preserves key decisions in `MEMORY.md` before compacting, saving 100k+ tokens. |
-| `/clean` | Cleans temporary caches, stale diffs, and dead sessions to free storage. |
-| `/docs` | View the full Cortex guide directly in-session. |
+| `cc research` | **Real** - queries the arXiv API, returns actual papers |
+| `cc palace` / `remember` / `recall` | **Real** - stores, tag-indexes, retrieves |
+| `cc provider` | **Real** - keys stored 0600, masked in output |
+| Cortex gateway | **Real** - serves HTTP, binds loopback only |
+| `cc dream` | Scaffold - identical output for every topic |
+| `cc think` | Scaffold - varies only by the echoed prompt |
+| `cc model` pricing | Static snapshot, not a live feed |
+- **Model pricing in `cc model` is a static snapshot**, not a live feed. Confirm
+  against the provider before relying on it.
+- **`cc status` reports what Claude Code has cached locally.** It does not query
+  a usage API. Profiles with no recorded usage show *unknown*, and `cc continue`
+  will not auto-select them - missing data is not evidence of free capacity.
+- **Antigravity integration cannot be tested in CI** (Windows-only app). Its
+  settings are generated and statically validated; verify by launching it.
 
----
-
-## 🧠 Autonomous Behavioral Rules
-
-Installed in `~/.claude/rules/`:
-1. **`01-token-efficiency.md`**: Enforces high-density responses, eliminates conversational filler, and leverages precise inspections.
-2. **`02-autonomous-skills.md`**: Automatically connects Spec Kit, Scrapling, and ECC without prompting.
-3. **`03-project-memory-sync.md`**: Standardizes `memory/MEMORY.md` and triggers auto-failover on rate limits.
-4. **`04-live-pairing.md`**: Enforces interactive co-pilot step discussions and proactive post-implementation amendment checks.
-5. **`05-memory-palace.md`**: Governs dual-speed memory recall before starting complex tasks and automated storage after breakthroughs.
-6. **`06-dream-simulation.md`**: Governs pre-release stress-testing, bug hunting, and counterfactual chaos simulations.
-
----
-
-## 📦 Package Structure
+## Layout
 
 ```
-claude-cortex/
-├── README.md                  # Complete documentation and usage guide
-├── install.exe                # 1-click Windows native executable installer
-├── install.cmd                # 1-click Windows batch installer with auto-bypass
-├── install.ps1                # 1-click Windows PowerShell installer with automated backup
-├── install.py                 # Universal cross-platform Python installer
-├── install.sh                 # 1-click installer with automated backup (Linux/macOS)
-├── bin/
-│   ├── claude                 # Master Bash wrapper (Linux/macOS)
-│   ├── claude.ps1             # Master PowerShell wrapper (Windows)
-│   └── claude.cmd             # Master CMD batch shim (Windows)
-├── completion/
-│   ├── claude.bash            # Bash completion script
-│   └── _claude                # Zsh completion script
-├── config/
-│   ├── CLAUDE.md              # Global system instructions
-│   ├── settings.json          # Token-optimized settings
-│   ├── rules/                 # Global behavioral rules (01-07)
-│   └── commands/              # Slash commands (/dream, /palace, /continue, /model, etc.)
-├── scripts/
-│   ├── claude-models.py       # Interactive keyboard TUI model selector & benchmark dossier
-│   ├── cortex-mcp.py          # Native Model Context Protocol server for Claude Desktop App
-│   ├── claude-capacity-check.py # Multi-account capacity & rate-limit failover engine
-│   ├── claude-palace.py       # Cognitive Memory Palace v2 engine
-│   ├── claude-dream.py        # Cognitive Dream Simulation engine
-│   ├── claude-provider.py     # External API provider & key manager
-│   ├── claude-research.py     # Deep research & architectural synthesis engine
-│   ├── gemini-proxy.py        # Google Gemini AI Studio streaming proxy
-│   ├── token-opt-clean.sh     # Linux/macOS maintenance cleaner
-│   └── token-opt-clean.ps1    # Windows maintenance cleaner
-└── skills/                    # Packaged skills (live-pairing, Spec Kit, Scrapling, etc.)
+bin/                Thin shims (bash / PowerShell / cmd) + IDE wrappers
+cortex/             The implementation - one core, shared by all platforms
+config/
+  CLAUDE.md         Global instructions (entry point, precedence)
+  rules/00-core.md  The only always-on rule
+  commands/         Slash commands
+  settings.json     Hooks and defaults
+scripts/            Hooks and standalone tools
+skills/             On-demand domain guidance
+tests/sandbox/      Container test harness
 ```

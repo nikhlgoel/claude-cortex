@@ -19,6 +19,10 @@ CACHE_FILE = os.path.expanduser("~/.claude/models_cache.json")
 # ==============================================================================
 # CURATED HIGH-PERFORMANCE MODEL CATALOG WITH DEEP PRICING & SPECIFICATIONS
 # ==============================================================================
+# NOTE: this catalog - including every price - is a static snapshot, not a live
+# feed. Prices and model availability change; treat these figures as indicative
+# and confirm against the provider's pricing page before relying on them. The
+# table is labelled as a snapshot wherever it is displayed for this reason.
 CURATED_MODELS = {
     "openrouter": [
         # --- 100% FREE MODELS ---
