@@ -1956,3 +1956,49 @@ scenario_integrity() {
         fail "verify reported success on a compromised install"
     fi
 }
+
+# --------------------------------------------------------------------------
+# The model catalog is live (OpenRouter's public API) instead of a static table
+# of guesses. It MUST degrade gracefully with no network - the failure mode of a
+# network call in a CLI is a hang, and a hang looks like a crash.
+# --------------------------------------------------------------------------
+scenario_model() {
+    banner "MODEL: live catalog, graceful offline"
+
+    # With no network (this container has none for this check), it must not hang
+    # and must not present fabricated data - either a cache or a clear message.
+    local start out rc
+    start=$(date +%s)
+    out=$(timeout 30 env PYTHONPATH="$WORK" python3 -m cortex model list 2>&1)
+    rc=$?
+    local elapsed=$(( $(date +%s) - start ))
+
+    if [ $rc -eq 124 ]; then
+        fail "cc model hung with no network (${elapsed}s)"
+    elif [ $elapsed -gt 20 ]; then
+        fail "cc model took ${elapsed}s - the fetch timeout is too loose"
+    else
+        pass "cc model returns promptly with no network (${elapsed}s)"
+    fi
+
+    # It must never claim a per-token price for a Claude subscription model.
+    if [[ "$out" == *"no per-token price applies"* ]]; then
+        pass "subscription models carry no fabricated price"
+    else
+        fail "subscription pricing note missing"
+    fi
+
+    # Offline with no cache must say so, not invent a catalog.
+    if [[ "$out" == *"offline"* || "$out" == *"OPENROUTER"* ]]; then
+        pass "offline state is stated, not faked"
+    else
+        fail "unexpected offline output -> $(head -3 <<< "$out")"
+    fi
+
+    # A fabricated static table must not have come back.
+    if [[ "$out" == *"static"* ]]; then
+        fail "still shipping a static catalog"
+    else
+        pass "no static catalog"
+    fi
+}

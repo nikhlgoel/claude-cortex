@@ -198,6 +198,7 @@ scenario_list() {
     echo "  mcp                tools exposed, subscription untouched by registration"
     echo "  instinct           learned-patterns store works standalone"
     echo "  integrity          install matches source; tampering detected"
+    echo "  model              live catalog, graceful offline"
     echo "  ide-wrapper        extension calling convention is honoured"
     echo "  install-uninstall  official Claude Code survives an uninstall"
     echo "  rules-budget       always-on prompt payload stays small"
@@ -266,6 +267,7 @@ case "$SCENARIO" in
     mcp)               scenario_mcp ;;
     instinct)          scenario_instinct ;;
     integrity)         scenario_integrity ;;
+    model)             scenario_model ;;
     all)
         scenario_smoke
         scenario_install_dryrun
@@ -307,6 +309,7 @@ case "$SCENARIO" in
         scenario_mcp
         scenario_instinct
         scenario_integrity
+        scenario_model
         ;;
     *)
         echo "Unknown scenario: ${SCENARIO}" >&2

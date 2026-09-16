@@ -13,11 +13,11 @@ View benchmarks, compare free vs paid models, and switch models for the active p
 1. If the user passed arguments (e.g. `set <model>`, `free`, `paid`, `info <model>`, `search <query>`):
    Execute via Bash:
    ```bash
-   python3 ~/.claude/scripts/claude-models.py $ARGUMENTS
+   cc model $ARGUMENTS   # live OpenRouter catalog, real pricing
    ```
 2. If no arguments were passed, list all available models and benchmarks for the active provider:
    ```bash
-   python3 ~/.claude/scripts/claude-models.py list
+   cc model list
    ```
 3. Present the table clearly, noting:
    - Which models are 100% **FREE** (0 credit cost)

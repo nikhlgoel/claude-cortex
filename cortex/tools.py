@@ -26,8 +26,6 @@ TOOLS = {
     "dream":    ("claude-dream.py", []),
     # Real: queries the arXiv API and returns actual papers.
     "research": ("claude-research.py", []),
-    "model":    ("claude-models.py", []),
-    "models":   ("claude-models.py", []),
     "provider": ("claude-provider.py", []),
     "update":   ("claude-update.py", []),
 }

@@ -96,7 +96,6 @@ def main():
         term_items = [
             "README.md", "bin", "config", "skills", "completion",
             "scripts/claude-capacity-check.py",
-            "scripts/claude-models.py",
             "scripts/claude-provider.py",
             "scripts/claude-palace.py",
             "scripts/claude-dream.py",
@@ -120,7 +119,6 @@ def main():
         mcp_items = [
             "README.md",
             "scripts/cortex-mcp.py",
-            "scripts/claude-models.py",
             "scripts/claude-provider.py",
             "scripts/claude-palace.py",
             "scripts/claude-dream.py",

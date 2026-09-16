@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import sys
 
-from . import capacity, doctor, ghidra, ide, integrity, launcher, mcp, profiles, tools
+from . import capacity, doctor, ghidra, ide, integrity, launcher, mcp, models, profiles, tools
 from .profiles import CortexError
 from .paths import profile_dir, profiles_dir
 
@@ -21,7 +21,7 @@ VERSION = "2.0.0"
 TOP_LEVEL_COMMANDS = (
     "profile", "profiles", "login", "switch", "status", "quota", "capacity",
     "limits", "continue", "doctor", "ide", "ghidra", "mcp", "integrity",
-    "version", "help",
+    "model", "models", "version", "help",
 ) + tuple(tools.TOOLS)
 
 USAGE = """\
@@ -58,7 +58,8 @@ Analysis
 
 Tools
   cc palace | remember | recall   Memory palace
-  cc model | provider | update    Model catalog, API providers, updates
+  cc model [free|<search>]        Live model catalog with real pricing
+  cc provider | update            API providers, updates
   cc dream                        Static risk analysis of real code
   cc research <topic>             Live arXiv retrieval
 
@@ -272,6 +273,8 @@ def main(argv=None):
             return mcp.main(rest)
         if head == "integrity":
             return integrity.main(rest)
+        if head in ("model", "models"):
+            return models.main(rest)
         if tools.is_tool(head):
             return tools.run(head, rest)
         if tools.is_retired(head):
