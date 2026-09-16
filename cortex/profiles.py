@@ -26,6 +26,14 @@ import subprocess
 from . import binary, jsonfile
 from .paths import canonical_dir, profile_dir, profiles_dir, shared_claude_dir
 
+class CortexError(Exception):
+    """An operation failed for a reason worth explaining to the operator.
+
+    Used for filesystem conditions - read-only profiles root, no space, denied
+    permissions - where a traceback tells the user nothing actionable.
+    """
+
+
 VALID_NAME = "abcdefghijklmnopqrstuvwxyz0123456789_-"
 
 # Directories shared between profiles in "synced" mode. Credentials and
@@ -60,7 +68,11 @@ def active_profile() -> str:
     if env:
         return normalize_name(env)
     try:
-        with open(current_profile_file(), encoding="utf-8") as fh:
+        # errors="replace" because this file can contain anything: a truncated
+        # write, a synced-folder conflict, or binary garbage. Undecodable bytes
+        # become replacement characters, which normalize_name then strips - a
+        # meaningless name rather than a UnicodeDecodeError traceback.
+        with open(current_profile_file(), encoding="utf-8", errors="replace") as fh:
             name = normalize_name(fh.read())
             if name:
                 return name
@@ -71,10 +83,20 @@ def active_profile() -> str:
 
 
 def set_active(name: str) -> None:
+    """Record the active profile.
+
+    Raises :class:`CortexError` rather than a bare OSError so the caller can
+    report something useful for a read-only or full filesystem.
+    """
     name = normalize_name(name)
-    os.makedirs(profiles_dir(), exist_ok=True)
-    with open(current_profile_file(), "w", encoding="utf-8") as fh:
-        fh.write(name)
+    try:
+        os.makedirs(profiles_dir(), exist_ok=True)
+        with open(current_profile_file(), "w", encoding="utf-8") as fh:
+            fh.write(name)
+    except OSError as exc:
+        raise CortexError(
+            f"cannot record the active profile in {profiles_dir()}: {exc.strerror}"
+        ) from exc
 
 
 def profile_mode(name: str) -> str:
@@ -110,10 +132,14 @@ def ensure_structure(name: str, mode: str = "synced") -> str:
     """Create the profile directory, returning its canonical path."""
     name = normalize_name(name)
     target = profile_dir(name)
-    os.makedirs(target, exist_ok=True)
-
-    with open(os.path.join(target, ".profile_mode"), "w", encoding="utf-8") as fh:
-        fh.write(mode)
+    try:
+        os.makedirs(target, exist_ok=True)
+        with open(os.path.join(target, ".profile_mode"), "w", encoding="utf-8") as fh:
+            fh.write(mode)
+    except OSError as exc:
+        raise CortexError(
+            f"cannot create the profile directory {target}: {exc.strerror}"
+        ) from exc
 
     if mode == "synced":
         shared = shared_claude_dir()

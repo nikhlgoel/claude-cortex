@@ -12,6 +12,7 @@ import os
 import sys
 
 from . import capacity, doctor, ide, launcher, profiles, tools
+from .profiles import CortexError
 from .paths import profile_dir, profiles_dir
 
 VERSION = "2.0.0"
@@ -303,12 +304,16 @@ def main(argv=None):
                 return rc
             return launcher.launch(name, rest)
 
-        # A single bare word that is neither a command nor a profile is almost
-        # always a mistyped command, not a prompt. Launching a session for it
-        # spends real tokens answering a typo, so refuse and explain instead.
-        # A genuine one-word prompt is still possible with -- or quoting.
-        if (not head.startswith("-") and " " not in head
-                and not any(a for a in rest if not a.startswith("-"))):
+        # A bare word that is neither a command nor a profile is almost always a
+        # mistyped command, not a prompt. Launching a session for it spends real
+        # tokens answering a typo, so refuse and explain instead.
+        #
+        # This deliberately does NOT depend on what follows. An earlier version
+        # only refused when every remaining argument was a flag, so
+        # `cc nonsensecmd --- check bogus` still started a session with the typo
+        # as the prompt. Trailing arguments make a typo more likely, not less.
+        # A genuine prompt goes through `--` or is quoted as one argument.
+        if not head.startswith("-") and " " not in head:
             print(f"cc: unknown command '{head}'.", file=sys.stderr)
             close = [c for c in list(TOP_LEVEL_COMMANDS) + profiles.list_profiles()
                      if c.startswith(head[:3])]
@@ -327,5 +332,30 @@ def main(argv=None):
     return launcher.launch(name, argv)
 
 
+def _run():
+    """Entry point with a last-resort guard.
+
+    Specific failures are reported where they happen; this catches whatever is
+    left so an unexpected filesystem or environment problem still produces one
+    actionable line rather than a stack trace. A traceback tells the operator
+    nothing they can act on, and makes a routine problem look like corruption.
+    """
+    try:
+        return main()
+    except CortexError as exc:
+        print(f"cc: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    except BrokenPipeError:
+        return 0
+    except OSError as exc:
+        location = getattr(exc, "filename", None)
+        where = f" ({location})" if location else ""
+        print(f"cc: {exc.strerror or exc}{where}", file=sys.stderr)
+        print("    Run 'cc doctor' for a fuller picture.", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_run())
