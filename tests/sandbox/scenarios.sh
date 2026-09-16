@@ -1733,3 +1733,96 @@ print(len([f for f in d['findings'] if f['file'].endswith('good.py')]))" <<< "$b
         fail "output does not vary with input - back to a fixed checklist"
     fi
 }
+
+# --------------------------------------------------------------------------
+# The MCP server is how Claude gains Cortex's tools. Two things must hold: it
+# speaks the protocol correctly (a corrupt stdout silently breaks a session),
+# and registering it must not disturb subscription auth - the whole reason for
+# the wrapper approach is that OAuth keeps working.
+# --------------------------------------------------------------------------
+scenario_mcp() {
+    banner "MCP: tools exposed, subscription untouched"
+
+    # Protocol: stdout must be pure JSON-RPC and advertise the real tools.
+    local out
+    out=$(printf '%s\n' \
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+        '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+        | python3 "${WORK}/scripts/cortex-mcp.py" 2>/dev/null)
+
+    local corrupt=0 tools=""
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        if ! python3 -c "import json,sys; json.loads(sys.argv[1])" "$line" 2>/dev/null; then
+            corrupt=$((corrupt + 1))
+        fi
+    done <<< "$out"
+    if [ $corrupt -eq 0 ]; then
+        pass "stdout is pure JSON-RPC (no stray output corrupting the stream)"
+    else
+        fail "$corrupt non-JSON line(s) on stdout - would break a real session"
+    fi
+
+    tools=$(python3 -c "
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    m = json.loads(line)
+    if m.get('id') == 2:
+        print(','.join(t['name'] for t in m['result']['tools']))
+" <<< "$out")
+    for want in decompile_binary analyze_code_risks recall_memory account_status; do
+        if [[ "$tools" == *"$want"* ]]; then
+            pass "exposes $want"
+        else
+            fail "missing tool: $want"
+        fi
+    done
+
+    # A tool call must return content, not a crash.
+    out=$(printf '%s\n' \
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+        '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"analyze_code_risks","arguments":{"path":"'"${WORK}"'/cortex/launcher.py"}}}' \
+        | python3 "${WORK}/scripts/cortex-mcp.py" 2>/dev/null)
+    if python3 -c "
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    m = json.loads(line)
+    if m.get('id') == 2 and m.get('result', {}).get('content'):
+        sys.exit(0)
+sys.exit(1)
+" <<< "$out"; then
+        pass "a tool call returns content"
+    else
+        fail "tool call did not return content"
+    fi
+
+    # Registration must preserve subscription auth - the core promise.
+    export CORTEX_PROFILES_DIR="${SANDBOX_DIR}/mcp-profiles"
+    CC profile add subacct >/dev/null 2>&1
+    CC login subacct >/dev/null 2>&1
+    local cfg="${CORTEX_PROFILES_DIR}/subacct/.claude.json"
+
+    CC mcp add subacct >/dev/null 2>&1
+    if grep -q '"oauthAccount"' "$cfg" 2>/dev/null \
+       && grep -q '"hasCompletedOnboarding"' "$cfg" 2>/dev/null \
+       && grep -q '"mcpServers"' "$cfg" 2>/dev/null; then
+        pass "registering MCP preserved oauthAccount and onboarding"
+    else
+        fail "registering MCP disturbed the auth config"
+    fi
+
+    # And removal must leave auth intact.
+    CC mcp remove subacct >/dev/null 2>&1
+    if grep -q '"oauthAccount"' "$cfg" 2>/dev/null \
+       && ! grep -q '"mcpServers"' "$cfg" 2>/dev/null; then
+        pass "removing MCP left auth intact"
+    else
+        fail "removing MCP damaged the auth config"
+    fi
+
+    unset CORTEX_PROFILES_DIR
+}

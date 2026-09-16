@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import sys
 
-from . import capacity, doctor, ghidra, ide, launcher, profiles, tools
+from . import capacity, doctor, ghidra, ide, launcher, mcp, profiles, tools
 from .profiles import CortexError
 from .paths import profile_dir, profiles_dir
 
@@ -20,7 +20,7 @@ VERSION = "2.0.0"
 # Recognized top-level commands, used for the "did you mean" hint.
 TOP_LEVEL_COMMANDS = (
     "profile", "profiles", "login", "switch", "status", "quota", "capacity",
-    "limits", "continue", "doctor", "ide", "ghidra", "version", "help",
+    "limits", "continue", "doctor", "ide", "ghidra", "mcp", "version", "help",
 ) + tuple(tools.TOOLS)
 
 USAGE = """\
@@ -52,6 +52,7 @@ Diagnostics
 
 Analysis
   cc ghidra status                Isolated binary analysis (see `cc ghidra help`)
+  cc mcp add                      Give Claude Cortex's tools via MCP
 
 Tools
   cc palace | remember | recall   Memory palace
@@ -265,6 +266,8 @@ def main(argv=None):
             return cmd_ide(rest)
         if head == "ghidra":
             return ghidra.main(rest)
+        if head == "mcp":
+            return mcp.main(rest)
         if tools.is_tool(head):
             return tools.run(head, rest)
         if tools.is_retired(head):

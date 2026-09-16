@@ -195,6 +195,7 @@ scenario_list() {
     echo "  mutation           do the tests actually detect regressions?"
     echo "  precedence         a checkout beats the installed copy"
     echo "  dream              output depends on the code analysed"
+    echo "  mcp                tools exposed, subscription untouched by registration"
     echo "  ide-wrapper        extension calling convention is honoured"
     echo "  install-uninstall  official Claude Code survives an uninstall"
     echo "  rules-budget       always-on prompt payload stays small"
@@ -260,6 +261,7 @@ case "$SCENARIO" in
     mutation)          scenario_mutation ;;
     precedence)        scenario_script_precedence ;;
     dream)             scenario_dream_real ;;
+    mcp)               scenario_mcp ;;
     all)
         scenario_smoke
         scenario_install_dryrun
@@ -298,6 +300,7 @@ case "$SCENARIO" in
         scenario_mutation
         scenario_script_precedence
         scenario_dream_real
+        scenario_mcp
         ;;
     *)
         echo "Unknown scenario: ${SCENARIO}" >&2
