@@ -25,7 +25,7 @@ DEFAULT_CONFIG = {
             "name": "Claude AI Subscription (OAuth)",
             "type": "oauth",
             "model": "claude-sonnet-5",
-            "description": "Standard Claude Code OAuth subscription quota (VL / WS profiles)"
+            "description": "Claude Code subscription quota, per configured profile"
         },
         "anthropic": {
             "name": "Direct Anthropic API Key",
@@ -145,7 +145,17 @@ def show_status():
         if pkey == "oauth":
             status_str = "[Subscription Quota]"
             model_str = pinfo.get("model", "claude-sonnet-5")
-            endpoint_str = "VL / WS Accounts (Auto-Failover)"
+            # Show the profiles that actually exist rather than the two names
+            # this file happened to be written with.
+            try:
+                import os as _os
+                _root = _os.path.expanduser("~/.claude-profiles")
+                _names = sorted(n for n in _os.listdir(_root)
+                                if _os.path.isdir(_os.path.join(_root, n)))
+            except OSError:
+                _names = []
+            endpoint_str = (", ".join(_names) if _names
+                            else "no profiles configured")
         else:
             k = pinfo.get("api_key", "")
             if k:
