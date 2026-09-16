@@ -2002,3 +2002,71 @@ scenario_model() {
         pass "no static catalog"
     fi
 }
+
+# --------------------------------------------------------------------------
+# Dream archive: the concept explorer runs in a session, but its output is
+# persisted AUTOMATICALLY by this tool - save/list/show, slugged and indexed.
+# The regression guarded here is silent loss: an exploration that ran but was
+# never saved leaves nothing behind. This proves the save side genuinely writes
+# and reads back, under a scratch root so it never touches a real ~/.claude.
+# --------------------------------------------------------------------------
+scenario_dream_doc() {
+    banner "DREAM-DOC: explorations are persisted, indexed, and recallable"
+
+    rm -rf "${SANDBOX_DIR}/dreams"
+    export CORTEX_DREAMS_ROOT="${SANDBOX_DIR}/dreams"
+    local tool="${WORK}/scripts/dream-doc.py"
+    local src="${SANDBOX_DIR}/dream-src"
+    mkdir -p "$src"
+    printf '# Exploration\n\nrecommended path and next action.\n' > "${src}/e.md"
+    printf '# Research\n\n- fact: a cited source\n' > "${src}/r.md"
+
+    # Empty archive says so rather than erroring.
+    local out
+    out=$(python3 "$tool" list 2>&1)
+    if [[ "$out" == *"No dream explorations"* ]]; then
+        pass "empty archive reports empty"
+    else
+        fail "empty archive output unexpected -> $(head -2 <<< "$out")"
+    fi
+
+    # Save writes the exploration, research, and metadata.
+    python3 "$tool" save \
+        --concept "Freemium tier for a niche tool" \
+        --exploration "${src}/e.md" --research "${src}/r.md" \
+        --crux "Does free convert above 3% without cannibalising paid?" \
+        --lenses "psychology,viability" \
+        --action "Instrument the paywall and watch conversion for two weeks" \
+        >/dev/null 2>&1
+    local dir; dir=$(find "${SANDBOX_DIR}/dreams" -name exploration.md | head -1)
+    if [ -f "$dir" ] && [ -f "$(dirname "$dir")/research.md" ] && [ -f "$(dirname "$dir")/meta.json" ]; then
+        pass "save writes exploration, research, and meta"
+    else
+        fail "save did not write the full entry"
+    fi
+
+    # The index carries the crux and the next action, not just a title.
+    out=$(python3 "$tool" list 2>&1)
+    if [[ "$out" == *"convert above 3%"* && "$out" == *"Instrument the paywall"* ]]; then
+        pass "index records the crux and the next action"
+    else
+        fail "index missing crux or action -> $(head -4 <<< "$out")"
+    fi
+
+    # Show reprints the saved exploration by concept substring.
+    out=$(python3 "$tool" show "freemium" 2>&1)
+    if [[ "$out" == *"recommended path and next action"* ]]; then
+        pass "show reprints a saved exploration"
+    else
+        fail "show did not return the exploration"
+    fi
+
+    # An unknown slug fails loudly instead of printing nothing as if it worked.
+    if python3 "$tool" show "nonexistent-concept" >/dev/null 2>&1; then
+        fail "show succeeded on a missing exploration"
+    else
+        pass "show fails on a missing exploration"
+    fi
+
+    unset CORTEX_DREAMS_ROOT
+}

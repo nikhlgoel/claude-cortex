@@ -60,9 +60,23 @@ The shims locate the core and hand over. They contain no logic worth testing.
 | `jsonfile.py` | Atomic, backed-up JSON writes; `write_text` for small files |
 
 Standalone tools under `scripts/` (invoked via `tools.py` or the MCP server):
-`claude-palace.py` (memory), `claude-dream.py` (risk analysis), `instinct-cli.py`
-(learned patterns), `claude-research.py` (arXiv), `cortex-mcp.py` (the MCP server),
-plus the lifecycle hooks.
+`claude-palace.py` (memory), `claude-analyze.py` (source risk analysis),
+`dream-doc.py` (the dream exploration archive — save/list/show, slugged and
+indexed), `instinct-cli.py` (learned patterns), `claude-research.py` (arXiv),
+`cortex-mcp.py` (the MCP server), plus the lifecycle hooks.
+
+### Two things named "dream", kept distinct
+
+- **`/dream` (in-session command, `config/commands/dream.md`)** — explores a
+  *concept or decision*. It needs a model, so it lives in a session. It researches
+  first, analyses across lenses (human psychology included, and it is the deep lens
+  for anything with a market or users), draws the decision as a diagram, ends in a
+  recommended path with a concrete first action, and **auto-saves** the whole
+  exploration via `dream-doc.py` — persistence is part of the run, not a command
+  the user remembers.
+- **`cc analyze` (terminal, `claude-analyze.py`)** — static *code* risk analysis.
+  A different job, so a different name. Terminal `cc dream` is refused with a
+  pointer to `/dream`, because a concept explorer with no model is a lie.
 
 ### Profiles
 

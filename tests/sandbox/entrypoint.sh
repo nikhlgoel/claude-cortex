@@ -199,6 +199,7 @@ scenario_list() {
     echo "  instinct           learned-patterns store works standalone"
     echo "  integrity          install matches source; tampering detected"
     echo "  model              live catalog, graceful offline"
+    echo "  dream-doc          explorations are persisted, indexed, recallable"
     echo "  ide-wrapper        extension calling convention is honoured"
     echo "  install-uninstall  official Claude Code survives an uninstall"
     echo "  rules-budget       always-on prompt payload stays small"
@@ -268,6 +269,7 @@ case "$SCENARIO" in
     instinct)          scenario_instinct ;;
     integrity)         scenario_integrity ;;
     model)             scenario_model ;;
+    dream-doc)         scenario_dream_doc ;;
     all)
         scenario_smoke
         scenario_install_dryrun
@@ -310,6 +312,7 @@ case "$SCENARIO" in
         scenario_instinct
         scenario_integrity
         scenario_model
+        scenario_dream_doc
         ;;
     *)
         echo "Unknown scenario: ${SCENARIO}" >&2

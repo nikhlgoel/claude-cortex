@@ -26,6 +26,10 @@ TOOLS = {
     # "dream"; renamed because dream is now the in-session concept explorer and
     # this is a linter, which is a different thing.
     "analyze":  ("claude-analyze.py", []),
+    # The dream exploration archive. dream itself runs in a session (it needs a
+    # model), but persisting and recalling its output is plain file work, so the
+    # save/list/show side is a real terminal tool the framework calls automatically.
+    "dream-doc": ("dream-doc.py", []),
     # Real: queries the arXiv API and returns actual papers.
     "research": ("claude-research.py", []),
     "provider": ("claude-provider.py", []),
