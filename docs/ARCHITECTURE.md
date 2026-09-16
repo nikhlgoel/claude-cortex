@@ -51,11 +51,18 @@ The shims locate the core and hand over. They contain no logic worth testing.
 | `launcher.py` | Flag translation, session environment, `execve` |
 | `binary.py` | Ordered, verified Claude Code binary resolution |
 | `capacity.py` | Account capacity; unknown stays unknown |
-| `doctor.py` | Diagnose and repair known failure modes |
+| `doctor.py` | Diagnose and repair known failure modes; surface integrity |
 | `ide.py` | Settings-only IDE integration |
-| `ghidra.py` | Isolated binary analysis |
-| `tools.py` | Dispatch to standalone tools |
-| `jsonfile.py` | Atomic, backed-up JSON writes |
+| `ghidra.py` | Isolated binary analysis (decompile + capability report) |
+| `mcp.py` | Register the MCP server per profile (auth untouched) |
+| `integrity.py` | Manifest generate/verify; runnable standalone |
+| `tools.py` | Dispatch to standalone tools (checkout wins over installed) |
+| `jsonfile.py` | Atomic, backed-up JSON writes; `write_text` for small files |
+
+Standalone tools under `scripts/` (invoked via `tools.py` or the MCP server):
+`claude-palace.py` (memory), `claude-dream.py` (risk analysis), `instinct-cli.py`
+(learned patterns), `claude-research.py` (arXiv), `cortex-mcp.py` (the MCP server),
+plus the lifecycle hooks.
 
 ### Profiles
 
@@ -133,29 +140,39 @@ being complete is worth more than one that does.
 
 ## 4. What it can do
 
-- Run several Claude accounts with genuinely isolated credentials
+- Run several Claude accounts with genuinely isolated credentials, subscription
+  auth intact (Cortex runs Claude's real binary; it never touches how you sign in)
 - Share project context across profiles while keeping quota separate
 - Keep terminal, PowerShell, and IDE sessions on one credential namespace
 - Diagnose and repair the known failure modes (`cc doctor --repair`)
+- Verify the install is byte-for-byte the reviewed source (`cc integrity verify`)
 - Configure IDEs without touching extension files
 - Store and recall project lessons (`cc palace` — real, tag-indexed)
+- Track learned behavioural patterns with confidence (`instinct-cli`, real store)
 - Retrieve real arXiv papers (`cc research` — real, live API)
-- Analyze binaries with no network route out (`cc ghidra`)
+- **Analyze binaries** with no network route out: decompile to C and produce a
+  capability report from imports (`cc ghidra` — verified against known binaries)
+- **Static risk analysis of source** with file/line/mechanism findings
+  (`cc dream` — real AST + shell analysis; found real bugs in its own codebase)
+- **Give Claude these as tools** via MCP (`cc mcp add`), callable mid-session
 
 ## 5. What it cannot do
 
 Stated plainly, because a tool that overstates itself is worse than a limited one.
+(`cc dream` and `cc think` used to be listed here as fakes; `dream` was rewritten
+into a real analyzer and `think` was removed rather than left pretending.)
 
 | Limitation | Detail |
 | :--- | :--- |
-| **`cc dream` analyzes nothing** | Fixed checklist. Byte-identical output for any topic, zero model calls. |
-| **`cc think` analyzes nothing** | Varies only by the echoed prompt. |
-| **`cc model` pricing is a snapshot** | Static table. Confirm against the provider. |
-| **`cc status` is not a usage API** | Reads Claude Code's local cache. No cache → unknown. |
+| **`cc model` pricing is a snapshot** | Static table of 22 models. Honestly labelled; confirm against the provider. Not yet a live feed. |
+| **`cc status` is not a usage API** | Reads Claude Code's local cache. No cache → unknown (never guessed). |
+| **`cc dream` is not a full linter** | Real, but pattern/AST-based: it finds the failure classes it knows (swallowed errors, non-atomic writes, missing timeouts, injection), not everything. |
+| **Ghidra loses inlined functions** | A `static` the compiler inlined has no boundary in the output; type inference near varargs can be confidently wrong. |
+| **Ghidra audit is not a proof** | Pattern matching misses obfuscation and reflection. The C++ decompiler is not source-audited. |
 | **Antigravity is not CI-tested** | Windows-only app. Config generated and statically validated; verify by launching. |
-| **Ghidra audit is not a proof** | Pattern matching misses obfuscation and reflection. The C++ decompiler is not covered. |
 | **No real-credential testing** | The suite uses a stub binary. Profile isolation is verified structurally, never against a live account. |
 | **Windows `.cmd` shims untested in CI** | No Windows container in the harness. |
+| **The integrity manifest is unsigned** | It detects tampering after install, but a determined attacker who replaces both the files and the manifest is not stopped by it alone. Signing is the remaining step. |
 
 ---
 
@@ -199,26 +216,31 @@ check** that fails on any change it did not declare.
 
 ## 7. Next steps
 
+Done since the first draft: `dream` rewritten into a real analyzer, `think`
+removed, command files triaged (130 → 74), MCP server built, integrity
+verification added, the instinct store made to work standalone.
+
 **Near term**
 1. Verify the Windows `.cmd` shims — no container covers them today.
 2. Manual Antigravity verification at install time (checklist in `HANDOVER.md`).
-3. Decide the fate of `dream` / `think`: make them call a model, or cut them.
-4. Replace the static model catalog with a live fetch, or stop printing prices.
-5. Triage the 130 command files — 19+ shadow native Claude Code skills.
+3. Replace the static model catalog with a live fetch, or drop the prices.
+4. Sign the integrity manifest, so replacing files *and* the manifest is caught.
 
 **Medium term**
-6. Per-profile **usage history**, so capacity reporting stops depending on a cache
+5. Per-profile **usage history**, so capacity reporting stops depending on a cache
    Claude Code may not have written.
-7. `cc doctor --explain <symptom>` — map a symptom to its cause and fix.
-8. ~~Signed release artifacts and a provenance stamp~~ - `cc integrity verify`
-   now confirms an install is byte-for-byte the reviewed source, and detects
-   post-install tampering. Signing the manifest itself is the remaining step.
-9. Extend mutation coverage to the hooks and installers, which have none.
+6. `cc doctor --explain <symptom>` — map a symptom to its cause and fix.
+7. Extend mutation coverage to the hooks and installers, which have none.
+8. More MCP tools: expose `cc doctor`, `cc integrity`, and profile capacity so a
+   session can reason about its own environment.
 
 **Longer term**
-10. A real Windows CI lane.
-11. Treat Ghidra as the first of several isolated analysis tools — the
-    audit → pin → isolate → report-only-update pattern generalizes.
+9. A real Windows CI lane.
+10. Treat Ghidra as the first of several isolated analysis tools — the
+    audit → pin → isolate → report-only-update pattern generalizes into
+    `cc audit <repo>`.
+11. Close the analysis loop: feed the Ghidra capability report and decompiled C
+    back through MCP so Claude reasons over a binary automatically.
 
 ---
 
