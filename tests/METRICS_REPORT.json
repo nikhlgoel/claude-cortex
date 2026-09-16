@@ -1,12 +1,12 @@
 {
-  "timestamp": "2026-09-15T19:07:49.123018+00:00",
+  "timestamp": "2026-09-16T05:18:15.054769+00:00",
   "summary": {
     "total_tests": 38,
     "passed": 38,
     "failures": 0,
     "errors": 0,
     "success": true,
-    "total_duration_ms": 6007.43
+    "total_duration_ms": 5307.56
   },
   "service_latencies": {
     "pretool_hook_execution_ms": {
