@@ -24,6 +24,25 @@ import subprocess
 # Prevent bytecode caching
 sys.dont_write_bytecode = True
 
+import tempfile
+
+
+def _atomic_write_json(path, data):
+    """Write JSON so a crash mid-write cannot truncate the target."""
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".cortex-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 SHARED_DIR = os.path.expanduser("~/.claude")
 SCRIPTS_DIR = os.path.join(SHARED_DIR, "scripts")
 if not os.path.exists(SCRIPTS_DIR):
@@ -110,8 +129,10 @@ def update_session_effort(level):
             with open(SETTINGS_FILE, "r") as f:
                 cfg = json.load(f)
         cfg["effortLevel"] = level
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(cfg, f, indent=2)
+        # Atomic write. SETTINGS_FILE is read by Claude on every launch, so a
+        # process killed mid-write must not leave it truncated. Temp file then
+        # replace makes the swap atomic on POSIX and Windows.
+        _atomic_write_json(SETTINGS_FILE, cfg)
 
         # Also update all active profiles
         profiles_dir = os.path.expanduser("~/.claude-profiles")
@@ -123,8 +144,7 @@ def update_session_effort(level):
                         with open(p_set, "r") as f:
                             pcfg = json.load(f)
                         pcfg["effortLevel"] = level
-                        with open(p_set, "w") as f:
-                            json.dump(pcfg, f, indent=2)
+                        _atomic_write_json(p_set, pcfg)
                     except Exception:
                         pass
     except Exception as e:

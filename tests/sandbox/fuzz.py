@@ -42,6 +42,7 @@ TOKENS = [
     "status", "doctor", "switch", "continue", "profile", "add", "remove",
     "login", "ide", "check", "apply", "--yes", "version", "help",
     "palace", "dream", "docs", "menu", "nonsensecmd",
+    "ghidra", "mcp", "analyze", "audit", "status", "add", "remove", "test",
     "", " ", "--", "-", "---", "-ghost", "-1", "0",
     "a b", "'; rm -rf /", "$(whoami)", "`id`", "..", "../..",
     "éè", "你好", "x" * 300,

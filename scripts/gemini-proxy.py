@@ -17,6 +17,11 @@ import sys
 import json
 import argparse
 import urllib.request
+
+# A proxy MUST bound its upstream wait. Without this a Gemini endpoint that
+# accepts the connection and never replies blocks the client forever, which is
+# indistinguishable from the proxy having crashed.
+UPSTREAM_TIMEOUT = 120  # seconds
 import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -156,7 +161,7 @@ class GeminiProxyHandler(BaseHTTPRequestHandler):
             )
 
             try:
-                with urllib.request.urlopen(gemini_req) as resp:
+                with urllib.request.urlopen(gemini_req, timeout=UPSTREAM_TIMEOUT) as resp:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
@@ -243,7 +248,7 @@ class GeminiProxyHandler(BaseHTTPRequestHandler):
             )
 
             try:
-                with urllib.request.urlopen(gemini_req) as resp:
+                with urllib.request.urlopen(gemini_req, timeout=UPSTREAM_TIMEOUT) as resp:
                     resp_data = json.loads(resp.read().decode("utf-8"))
                     full_text = ""
                     candidates = resp_data.get("candidates", [])
