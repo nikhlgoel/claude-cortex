@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import sys
 
-from . import capacity, doctor, ide, launcher, profiles, tools
+from . import capacity, doctor, ghidra, ide, launcher, profiles, tools
 from .profiles import CortexError
 from .paths import profile_dir, profiles_dir
 
@@ -20,7 +20,7 @@ VERSION = "2.0.0"
 # Recognized top-level commands, used for the "did you mean" hint.
 TOP_LEVEL_COMMANDS = (
     "profile", "profiles", "login", "switch", "status", "quota", "capacity",
-    "limits", "continue", "doctor", "ide", "version", "help",
+    "limits", "continue", "doctor", "ide", "ghidra", "version", "help",
 ) + tuple(tools.TOOLS)
 
 USAGE = """\
@@ -49,6 +49,9 @@ Diagnostics
   cc ide check                    Inspect IDE integration
   cc ide apply [--yes]            Configure IDEs for the active profile
   cc version
+
+Analysis
+  cc ghidra status                Isolated binary analysis (see `cc ghidra help`)
 
 Tools
   cc palace | remember | recall   Memory palace
@@ -259,6 +262,8 @@ def main(argv=None):
             return doctor.report(repair="--repair" in rest)
         if head == "ide":
             return cmd_ide(rest)
+        if head == "ghidra":
+            return ghidra.main(rest)
         if tools.is_tool(head):
             return tools.run(head, rest)
         if tools.is_retired(head):
