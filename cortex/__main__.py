@@ -56,7 +56,8 @@ Analysis
 Tools
   cc palace | remember | recall   Memory palace
   cc model | provider | update    Model catalog, API providers, updates
-  cc dream | research | think     Review scaffolds (see README limitations)
+  cc dream                        Static risk analysis of real code
+  cc research <topic>             Live arXiv retrieval
 
 Prompts
   cc -- <prompt>                  Send a prompt, even if it looks like a command

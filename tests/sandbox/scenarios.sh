@@ -1627,3 +1627,109 @@ scenario_mutation() {
         sed 's/^/      /' <<< "$out" | tail -40
     fi
 }
+
+# --------------------------------------------------------------------------
+# A repository checkout must win over an installed copy. The order used to be
+# reversed, so running a tool from a checkout silently executed the version at
+# ~/.claude/scripts - a rewritten tool appeared not to have changed, and in one
+# case crashed inside code that no longer existed.
+# --------------------------------------------------------------------------
+scenario_script_precedence() {
+    banner "PRECEDENCE: a checkout beats the installed copy"
+
+    CORTEX_SANDBOX=1 bash "${WORK}/install.sh" --yes >/dev/null 2>&1
+
+    # Make the installed copy clearly distinguishable from the repo one.
+    mkdir -p "${HOME}/.claude/scripts"
+    printf '#!/usr/bin/env python3\nprint("INSTALLED-STALE-COPY")\n' \
+        > "${HOME}/.claude/scripts/claude-dream.py"
+
+    local out
+    out=$(cd "$WORK" && PYTHONPATH="$WORK" python3 -m cortex dream --path cortex 2>&1 | head -3)
+    if [[ "$out" == *"INSTALLED-STALE-COPY"* ]]; then
+        fail "the installed copy shadowed the checkout"
+    else
+        pass "checkout copy took precedence over the installed one"
+    fi
+
+    # And outside a checkout the installed copy must still be found.
+    out=$(cd /tmp && PYTHONPATH="${HOME}/.claude/cortex-core" \
+          python3 -c "
+import sys; sys.path.insert(0, '${HOME}/.claude/cortex-core')
+from cortex import tools
+print('found' if tools.find_script('claude-dream.py') else 'missing')
+" 2>&1)
+    if [[ "$out" == *found* ]]; then
+        pass "installed copy still resolves outside a checkout"
+    else
+        fail "installed copy not found outside a checkout -> $out"
+    fi
+}
+
+# --------------------------------------------------------------------------
+# dream must analyse, not print a fixed checklist. The regression to guard
+# against is it reverting to output that does not depend on the input.
+# --------------------------------------------------------------------------
+scenario_dream_real() {
+    banner "DREAM: output depends on the code analysed"
+
+    local dir="${SANDBOX_DIR}/dreamtest"
+    mkdir -p "$dir"
+
+    # A file with a genuine, silent defect.
+    cat > "${dir}/bad.py" <<'PY'
+import subprocess
+def run(cmd):
+    try:
+        subprocess.run(cmd, shell=True)
+    except Exception:
+        pass
+def collect(items=[]):
+    items.append(1)
+    return items
+PY
+    # A file with none of them.
+    cat > "${dir}/good.py" <<'PY'
+import subprocess
+def run(cmd):
+    try:
+        subprocess.run(cmd, timeout=30)
+    except OSError as exc:
+        raise RuntimeError("command failed") from exc
+def collect(items=None):
+    items = list(items or [])
+    items.append(1)
+    return items
+PY
+
+    local bad good
+    bad=$(python3 "${WORK}/scripts/claude-dream.py" --path "$dir" --json 2>/dev/null)
+    local n_bad
+    n_bad=$(python3 -c "
+import json,sys
+d=json.loads(sys.stdin.read())
+print(len([f for f in d['findings'] if f['file'].endswith('bad.py')]))" <<< "$bad")
+    local n_good
+    n_good=$(python3 -c "
+import json,sys
+d=json.loads(sys.stdin.read())
+print(len([f for f in d['findings'] if f['file'].endswith('good.py')]))" <<< "$bad")
+
+    if [ "$n_bad" -ge 3 ]; then
+        pass "found $n_bad defect(s) in the file that has them"
+    else
+        fail "found only $n_bad finding(s) in a file with shell=True, a swallowed exception and a mutable default"
+    fi
+    if [ "$n_good" -eq 0 ]; then
+        pass "found nothing in the file that is clean"
+    else
+        fail "reported $n_good false positive(s) on clean code"
+    fi
+
+    # The old version produced identical output regardless of input.
+    if [ "$n_bad" -ne "$n_good" ]; then
+        pass "output depends on the code, not just the invocation"
+    else
+        fail "output does not vary with input - back to a fixed checklist"
+    fi
+}

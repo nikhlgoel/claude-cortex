@@ -57,10 +57,16 @@ prepare() {
     rm -rf "$SANDBOX_DIR"
     mkdir -p "$WORK" "$SANDBOX_DIR" "${HOME}/.local/bin"
     # -a preserves the exec bits the installer and wrapper depend on.
-    cp -a "${REPO_RO}/." "${WORK}/" 2>/dev/null || {
+    #
+    # Local artifact directories are excluded rather than copied. A Ghidra run
+    # writes ghidra-out/ as its own container uid, and a single unreadable file
+    # made cp fail outright - which aborted EVERY scenario with a message that
+    # pointed at the mount rather than at the stray directory. Test setup should
+    # not be breakable by an unrelated tool's leftovers.
+    if ! tar -C "${REPO_RO}"             --exclude=./.git             --exclude=./ghidra-out             --exclude=./.ghidra-test             --exclude=./__pycache__             -cf - . 2>/dev/null | tar -C "${WORK}" -xf - 2>/dev/null; then
         echo "FATAL: could not copy repository from ${REPO_RO}" >&2
         exit 1
-    }
+    fi
 
     # Defensive CRLF strip. The repository enforces LF via .gitattributes, but a
     # Windows editor can reintroduce CRLF in the working tree, and a bash script
@@ -187,6 +193,8 @@ scenario_list() {
     echo "  fuzz               adversarial exploration (args, state, filesystem chaos)"
     echo "  chaos-env          hostile environment, concurrency, IDE settings chaos"
     echo "  mutation           do the tests actually detect regressions?"
+    echo "  precedence         a checkout beats the installed copy"
+    echo "  dream              output depends on the code analysed"
     echo "  ide-wrapper        extension calling convention is honoured"
     echo "  install-uninstall  official Claude Code survives an uninstall"
     echo "  rules-budget       always-on prompt payload stays small"
@@ -250,6 +258,8 @@ case "$SCENARIO" in
     fuzz)              scenario_fuzz ;;
     chaos-env)         scenario_chaos_env ;;
     mutation)          scenario_mutation ;;
+    precedence)        scenario_script_precedence ;;
+    dream)             scenario_dream_real ;;
     all)
         scenario_smoke
         scenario_install_dryrun
@@ -286,6 +296,8 @@ case "$SCENARIO" in
         scenario_fuzz
         scenario_chaos_env
         scenario_mutation
+        scenario_script_precedence
+        scenario_dream_real
         ;;
     *)
         echo "Unknown scenario: ${SCENARIO}" >&2

@@ -144,6 +144,7 @@ def cmd_analyze(args):
         "/work/out/project", "cortex",
         "-import", f"/work/in/{name}",
         "-scriptPath", "/work/scripts",
+        "-postScript", "ExtractProgramInfo.java", f"/work/out/{name}.json",
         "-postScript", "DecompileToC.java", f"/work/out/{name}.c",
         "-deleteProject", "-analysisTimeoutPerFile", "600",
     ] + extra
@@ -151,18 +152,20 @@ def cmd_analyze(args):
     print(f"Analyzing {name} with no network access.")
     print()
     rc = _run(cmd)
+    if rc != 0:
+        return rc
 
-    if rc == 0 and os.path.exists(source_out):
-        with open(source_out, encoding="utf-8", errors="replace") as fh:
-            functions = sum(1 for line in fh if line.startswith("// ----"))
+    # Ending at "here is a file path" leaves the actual work undone. Render the
+    # capability report so the command answers the question people open a
+    # decompiler to ask: what is this thing able to do?
+    facts = os.path.join(out_dir, f"{name}.json")
+    reporter = os.path.join(tools_dir(), "report.py")
+    if os.path.exists(facts) and os.path.exists(reporter):
+        print()
+        _run([sys.executable, reporter, facts, "--decompiled", source_out])
+    elif os.path.exists(source_out):
         print()
         print(f"  Decompiled C: {source_out}")
-        print(f"  {functions} function(s) recovered.")
-        print()
-        print("  This is recovered logic, not the original source. Verified against")
-        print("  a binary whose source we wrote: recursion, arithmetic and constants")
-        print("  come back faithfully; functions the compiler inlined lose their")
-        print("  boundaries and appear merged into their caller.")
     return rc
 
 

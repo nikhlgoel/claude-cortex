@@ -26,8 +26,6 @@ TOOLS = {
     "dream":    ("claude-dream.py", []),
     # Real: queries the arXiv API and returns actual papers.
     "research": ("claude-research.py", []),
-    "think":    ("claude-cognition.py", []),
-    "smart":    ("claude-cognition.py", []),
     "model":    ("claude-models.py", []),
     "models":   ("claude-models.py", []),
     "provider": ("claude-provider.py", []),
@@ -37,6 +35,16 @@ TOOLS = {
 # Commands that existed in older versions and no longer do. Naming them
 # explicitly produces a useful message instead of a confusing one.
 RETIRED = {
+    # Cut rather than rewritten. It printed a fixed scaffold that varied only by
+    # the echoed prompt - no analysis, no model call. The honest options were to
+    # make it call a model or to remove it, and `cc dream` now covers the
+    # "what breaks" case with real findings, so a second scaffold earns nothing.
+    "think": "removed; it printed a fixed scaffold. Use 'cc dream' for real "
+             "analysis, or just ask Claude directly",
+    "smart": "removed; it printed a fixed scaffold. Use 'cc dream' for real "
+             "analysis, or just ask Claude directly",
+    "cognition": "removed; see 'cc dream'",
+
     "menu":  "the interactive menu was removed; use 'cc --help'",
     "docs":  "documentation moved to README.md and HANDOVER.md in the repository",
     "turbo": "use 'cc -t' to launch in turbo mode",
@@ -50,10 +58,27 @@ RETIRED = {
 
 
 def script_dirs():
-    """Where the tool scripts might live: installed first, then the checkout."""
-    yield os.path.join(shared_claude_dir(), "scripts")
+    """Where the tool scripts might live.
+
+    A REPOSITORY CHECKOUT WINS over the installed copy.
+
+    The order used to be the other way round, and the effect was nasty during
+    development: `cc dream` from a checkout silently ran the copy installed at
+    ~/.claude/scripts instead of the file being edited. The symptom was a
+    rewritten tool appearing not to have changed - or worse, crashing in code
+    that no longer existed. You should run the code you are looking at.
+
+    Outside a checkout there is no repo directory, so the installed copy is used
+    exactly as before.
+    """
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    yield os.path.join(repo, "scripts")
+    repo_scripts = os.path.join(repo, "scripts")
+    # Treat it as a checkout only if it really looks like one, so an installed
+    # layout that happens to have a sibling directory is not mistaken for source.
+    if os.path.isdir(repo_scripts) and os.path.isfile(os.path.join(repo, "install.sh")):
+        yield repo_scripts
+    yield os.path.join(shared_claude_dir(), "scripts")
+    yield repo_scripts
 
 
 def find_script(name):
