@@ -47,6 +47,14 @@ if [ -z "$REAL_CLAUDE" ]; then
 fi
 
 if [ -z "$REAL_CLAUDE" ]; then
+    if command -v npm >/dev/null 2>&1; then
+        echo "Claude Code CLI binary not found. Installing via npm..."
+        npm install -g @anthropic-ai/claude-code 2>&1 || true
+        REAL_CLAUDE="$(command -v claude 2>/dev/null || true)"
+    fi
+fi
+
+if [ -z "$REAL_CLAUDE" ]; then
     echo ""
     echo "⚠  Claude Code CLI binary not found."
     echo "   Please install it first:"
@@ -227,7 +235,46 @@ if [ -d "$COMP_DIR" ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 12. PATH check
+# 12. Setup Profiles & Application Launcher Entries
+# --------------------------------------------------------------------------
+PROFILES_TO_ADD=()
+
+for arg in "$@"; do
+    case "$arg" in
+        --profiles=*)
+            IFS=',' read -ra ADDR <<< "${arg#*=}"
+            for p in "${ADDR[@]}"; do PROFILES_TO_ADD+=("$p"); done
+            ;;
+        --profiles|-p)
+            ;;
+        *)
+            if [[ "$arg" != -* ]]; then
+                IFS=',' read -ra ADDR <<< "$arg"
+                for p in "${ADDR[@]}"; do PROFILES_TO_ADD+=("$p"); done
+            fi
+            ;;
+    esac
+done
+
+if [ ${#PROFILES_TO_ADD[@]} -gt 0 ]; then
+    echo ""
+    echo "Setting up initial profiles and application launcher entries..."
+    first=true
+    for prof in "${PROFILES_TO_ADD[@]}"; do
+        prof_clean=$(echo "$prof" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+        if [ -n "$prof_clean" ]; then
+            if [ "$first" = true ]; then
+                "${BIN_DIR}/claude" profile add "$prof_clean" synced yes 2>/dev/null || true
+                first=false
+            else
+                "${BIN_DIR}/claude" profile add "$prof_clean" synced no 2>/dev/null || true
+            fi
+        fi
+    done
+fi
+
+# --------------------------------------------------------------------------
+# 13. PATH check
 # --------------------------------------------------------------------------
 if ! echo "$PATH" | grep -q "${BIN_DIR}"; then
     echo ""

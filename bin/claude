@@ -107,6 +107,55 @@ ensure_profile_structure() {
   fi
 }
 
+create_profile_desktop_entry() {
+  local prof="$1"
+  local prof_upper
+  prof_upper="$(echo "$prof" | tr '[:lower:]' '[:upper:]')"
+  local apps_dir="${HOME}/.local/share/applications"
+  mkdir -p "$apps_dir"
+  local desktop_file="${apps_dir}/claude-${prof}.desktop"
+
+  local bin_path="${HOME}/.local/bin/claude"
+  local exec_cmd=""
+  local is_terminal="false"
+
+  if command -v claude-desktop-unofficial >/dev/null 2>&1 || [ -x "/usr/bin/claude-desktop-unofficial" ]; then
+    exec_cmd="claude-desktop-unofficial --user-data-dir=${HOME}/.config/claude-${prof} %U"
+    is_terminal="false"
+  else
+    exec_cmd="${bin_path} -${prof}"
+    is_terminal="true"
+  fi
+
+  cat > "$desktop_file" << EOF
+[Desktop Entry]
+Name=Claude ${prof_upper}
+Comment=Claude Cortex - ${prof_upper} Profile
+Exec=${exec_cmd}
+Icon=claude-desktop-unofficial
+Type=Application
+Terminal=${is_terminal}
+Categories=Development;Utility;
+StartupWMClass=Claude-${prof_upper}
+EOF
+
+  chmod +x "$desktop_file"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
+  fi
+}
+
+remove_profile_desktop_entry() {
+  local prof="$1"
+  local apps_dir="${HOME}/.local/share/applications"
+  rm -f "${apps_dir}/claude-${prof}.desktop"
+  rm -f "${apps_dir}/claude-account-${prof}.desktop"
+  rm -rf "${HOME}/.config/claude-${prof}"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
+  fi
+}
+
 get_profile_email() {
   local prof="$1"
   local cfg="${PROFILES_DIR}/${prof}/.claude.json"
@@ -399,6 +448,9 @@ interactive_menu() {
 
 interactive_add_profile() {
   local prof_name="$1"
+  local mode_arg="${2:-}"
+  local auto_default="${3:-}"
+
   if [ -z "$prof_name" ]; then
     echo -n "Enter new profile name (e.g. work, client1, test): "
     read -r prof_name
@@ -412,52 +464,65 @@ interactive_add_profile() {
 
   if [ -d "${PROFILES_DIR}/${prof_name}" ]; then
     echo "Profile '${prof_name}' already exists at ${PROFILES_DIR}/${prof_name}."
+    create_profile_desktop_entry "$prof_name"
     echo "To re-authenticate, run: claude login ${prof_name}"
     exit 0
   fi
 
-  echo ""
-  echo "Choose Profile Sharing Mode:"
-  echo "-----------------------------------------------------------------------"
-  echo "  [1] SYNCED (Recommended)"
-  echo "      • Shares project transcripts, memory, Cognitive Palace, custom skills,"
-  echo "        commands, rules, and settings with your other profiles."
-  echo "      • Only auth credentials and usage limits are isolated."
-  echo ""
-  echo "  [2] ISOLATED (Completely Separate)"
-  echo "      • Independent workspace with separate chat history and settings."
-  echo "-----------------------------------------------------------------------"
-  echo -n "Select mode [1/2] (Default: 1): "
-  read -r mode_choice
-
   local mode="synced"
-  if [ "$mode_choice" = "2" ] || [ "$mode_choice" = "isolated" ]; then
-    mode="isolated"
+  if [ -n "$mode_arg" ]; then
+    mode="$mode_arg"
+  elif [ -t 0 ]; then
+    echo ""
+    echo "Choose Profile Sharing Mode:"
+    echo "-----------------------------------------------------------------------"
+    echo "  [1] SYNCED (Recommended)"
+    echo "      • Shares project transcripts, memory, Cognitive Palace, custom skills,"
+    echo "        commands, rules, and settings with your other profiles."
+    echo "      • Only auth credentials and usage limits are isolated."
+    echo ""
+    echo "  [2] ISOLATED (Completely Separate)"
+    echo "      • Independent workspace with separate chat history and settings."
+    echo "-----------------------------------------------------------------------"
+    echo -n "Select mode [1/2] (Default: 1): "
+    read -r mode_choice
+
+    if [ "$mode_choice" = "2" ] || [ "$mode_choice" = "isolated" ]; then
+      mode="isolated"
+    fi
   fi
 
   ensure_profile_structure "$prof_name" "$mode"
+  create_profile_desktop_entry "$prof_name"
   echo ""
   echo "✓ Successfully created profile '${prof_name}' in [$(echo "$mode" | tr '[:lower:]' '[:upper:]')] mode."
+  echo "✓ Created application launcher shortcut: Claude $(echo "$prof_name" | tr '[:lower:]' '[:upper:]')"
 
-  echo ""
-  echo -n "Would you like to log in to this account now? [Y/n]: "
-  read -r login_choice
-  login_choice=$(echo "${login_choice:-y}" | tr '[:upper:]' '[:lower:]')
+  if [ -t 0 ]; then
+    echo ""
+    echo -n "Would you like to log in to this account now? [Y/n]: "
+    read -r login_choice
+    login_choice=$(echo "${login_choice:-y}" | tr '[:upper:]' '[:lower:]')
 
-  if [ "$login_choice" = "y" ] || [ "$login_choice" = "yes" ]; then
-    echo "Starting browser authentication for '${prof_name}'..."
-    export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/${prof_name}"
-    export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/${prof_name}"
-    "$REAL_CLAUDE" auth login
-    sync_active_to_home "$prof_name"
-    echo "✓ Authentication completed for '${prof_name}'."
-  fi
+    if [ "$login_choice" = "y" ] || [ "$login_choice" = "yes" ]; then
+      echo "Starting browser authentication for '${prof_name}'..."
+      export CLAUDE_CONFIG_DIR="${PROFILES_DIR}/${prof_name}"
+      export CLAUDE_SECURESTORAGE_CONFIG_DIR="${PROFILES_DIR}/${prof_name}"
+      "$REAL_CLAUDE" auth login
+      sync_active_to_home "$prof_name"
+      echo "✓ Authentication completed for '${prof_name}'."
+    fi
 
-  echo ""
-  echo -n "Would you like to set '${prof_name}' as your active default profile? [y/N]: "
-  read -r set_default_choice
-  set_default_choice=$(echo "${set_default_choice:-n}" | tr '[:upper:]' '[:lower:]')
-  if [ "$set_default_choice" = "y" ] || [ "$set_default_choice" = "yes" ]; then
+    echo ""
+    echo -n "Would you like to set '${prof_name}' as your active default profile? [y/N]: "
+    read -r set_default_choice
+    set_default_choice=$(echo "${set_default_choice:-n}" | tr '[:upper:]' '[:lower:]')
+    if [ "$set_default_choice" = "y" ] || [ "$set_default_choice" = "yes" ]; then
+      echo "$prof_name" > "$CURRENT_PROFILE_FILE"
+      sync_active_to_home "$prof_name"
+      echo "✓ Active default profile set to '${prof_name}'."
+    fi
+  elif [ "$auto_default" = "yes" ] || [ "$auto_default" = "true" ]; then
     echo "$prof_name" > "$CURRENT_PROFILE_FILE"
     sync_active_to_home "$prof_name"
     echo "✓ Active default profile set to '${prof_name}'."
@@ -495,11 +560,16 @@ interactive_remove_profile() {
     fi
   fi
 
-  echo -n "Are you sure you want to remove profile '${prof_name}'? [y/N]: "
-  read -r confirm
+  local confirm="yes"
+  if [ -t 0 ]; then
+    echo -n "Are you sure you want to remove profile '${prof_name}'? [y/N]: "
+    read -r confirm
+  fi
+
   if [ "$confirm" = "y" ] || [ "$confirm" = "yes" ]; then
     rm -rf "${PROFILES_DIR}/${prof_name}"
-    echo "✓ Profile '${prof_name}' has been removed."
+    remove_profile_desktop_entry "$prof_name"
+    echo "✓ Profile '${prof_name}' and its application launcher entry have been removed."
   else
     echo "Aborted."
   fi
@@ -713,7 +783,7 @@ print('Valid levels: low, medium, high, xhigh, max, off')
       shift
       subcmd="${1:-list}"
       case "$subcmd" in
-        add|new|create) interactive_add_profile "${2:-}" ;;
+        add|new|create) interactive_add_profile "${2:-}" "${3:-}" "${4:-}" ;;
         remove|rm|delete) interactive_remove_profile "${2:-}" ;;
         list|ls|status) show_status; exit 0 ;;
         switch)
