@@ -1,0 +1,25 @@
+# Shell scripts, hooks, and the wrapper MUST use LF line endings.
+#
+# A bash script with CRLF endings does not run on Linux or macOS: the shebang
+# resolves with a trailing carriage return and every line fails with
+# "$'\r': command not found". Without this file, a checkout or zip produced on
+# Windows ships a wrapper that cannot execute on the target platform.
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.py            text eol=lf
+bin/claude      text eol=lf
+completion/*    text eol=lf
+Makefile        text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+
+# Windows-native scripts keep CRLF - cmd.exe is not reliable without it.
+*.cmd           text eol=crlf
+*.bat           text eol=crlf
+*.ps1           text eol=crlf
+
+# Binaries and archives must never be transformed.
+*.exe           binary
+*.zip           binary
+*.gz            binary
+*.png           binary
