@@ -100,6 +100,41 @@ MUTATIONS = [
         'print("No profiles remain. Create one with: cc profile add")',
         ["scenario:edge-cases"],
     ),
+    (
+        "integrity: tampering not detected (hash always matches)",
+        "cortex/integrity.py",
+        "(ok if actual == expected else modified).append(rel)",
+        "(ok if True else modified).append(rel)",
+        ["scenario:integrity"],
+    ),
+    (
+        "integrity: injected extra files not reported",
+        "cortex/integrity.py",
+        "extra = sorted(on_disk - set(manifest))",
+        "extra = []",
+        ["scenario:integrity"],
+    ),
+    (
+        "mcp: log() writes to stdout, corrupting the JSON-RPC stream",
+        "scripts/cortex-mcp.py",
+        r'sys.stderr.write(f"[cortex-mcp] {message}\n")',
+        r'sys.stdout.write(f"[cortex-mcp] {message}\n")',
+        ["scenario:mcp"],
+    ),
+    (
+        "instinct: an invalid domain is stored instead of rejected",
+        "scripts/instinct-cli.py",
+        "if domain not in DOMAINS:",
+        "if False:",
+        ["scenario:instinct"],
+    ),
+    (
+        "mcp registration clobbers the auth config",
+        "cortex/mcp.py",
+        "data[\"mcpServers\"] = servers",
+        "data.clear(); data[\"mcpServers\"] = servers",
+        ["scenario:mcp"],
+    ),
 ]
 
 
