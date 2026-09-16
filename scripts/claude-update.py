@@ -260,37 +260,49 @@ def print_status_table(statuses):
         print("  All components are running the latest official releases.")
     print("==========================================================================================")
 
-def apply_updates(statuses):
-    """Applies available updates across components safely."""
+def apply_updates(statuses, with_ide=False):
+    """Applies available updates across components safely.
+
+    Only official, in-place update mechanisms are used. This function never pipes
+    a remote script into a shell, never re-runs the Cortex installer, and never
+    touches an IDE extension unless ``with_ide`` is explicitly set.
+    """
     print("Starting automated updates across Claude Cortex ecosystem...\n")
 
     # 1. Update Claude Code CLI
     cli_item = next((s for s in statuses if s["type"] == "cli"), None)
     if cli_item and cli_item["has_update"]:
         print(f"[*] Updating Claude Code CLI from {cli_item['current']} -> {cli_item['latest']}...")
-        run_res = subprocess.run("curl -fsSL https://claude.ai/install.sh | bash", shell=True, capture_output=True, text=True)
-        if run_res.returncode == 0:
-            print("  ✓ Claude Code CLI updated successfully.")
-            # Re-link claude.real to the latest binary in ~/.local/share/claude/versions/
-            latest_bin = run_cmd(["bash", "-c", "ls -v ~/.local/share/claude/versions/ 2>/dev/null | tail -n 1"])
-            if latest_bin:
-                src = os.path.expanduser(f"~/.local/share/claude/versions/{latest_bin}")
-                if os.path.isfile(src):
-                    os.unlink(REAL_CLAUDE) if os.path.exists(REAL_CLAUDE) else None
-                    os.symlink(src, REAL_CLAUDE)
-                    print(f"  ✓ Re-linked official binary: {latest_bin}")
+        # Use the CLI's own `update` subcommand. Never pipe a remote script into a
+        # shell, and never re-point claude.real ourselves: the official updater
+        # manages its own install layout, and rewriting that symlink from here is
+        # how a half-finished update leaves the `claude` command broken.
+        if os.path.exists(REAL_CLAUDE):
+            run_res = subprocess.run([REAL_CLAUDE, "update"], capture_output=True, text=True)
+            if run_res.returncode == 0:
+                print("  ✓ Claude Code CLI updated via its official updater.")
+            else:
+                print(f"  ⚠ Claude Code CLI update warning: {run_res.stderr.strip()[:150]}")
         else:
-            print(f"  ⚠ Claude Code CLI update warning: {run_res.stderr.strip()[:150]}")
+            print("  ⚠ Official Claude Code binary not found; skipping CLI update.")
+            print("    Install or repair it from https://claude.ai/download, then re-run.")
 
     # 2. Update VS Code Extension
     ide_item = next((s for s in statuses if s["name"] == "VS Code Extension"), None)
     if ide_item and ide_item["has_update"]:
-        print("[*] Updating VS Code Extension (anthropic.claude-code)...")
-        res = subprocess.run(["code", "--install-extension", "anthropic.claude-code", "--force"], capture_output=True, text=True)
-        if res.returncode == 0:
-            print("  ✓ VS Code extension updated.")
+        if with_ide:
+            print("[*] Updating VS Code Extension (anthropic.claude-code)...")
+            res = subprocess.run(["code", "--install-extension", "anthropic.claude-code", "--force"],
+                                 capture_output=True, text=True)
+            if res.returncode == 0:
+                print("  ✓ VS Code extension updated.")
+            else:
+                print(f"  ⚠ Extension update warning: {res.stderr.strip()[:100]}")
         else:
-            print(f"  ⚠ Extension update warning: {res.stderr.strip()[:100]}")
+            # Reinstalling an extension restarts the extension host and can drop a
+            # live IDE session. Opt-in only.
+            print("[ ] VS Code Extension update available (skipped).")
+            print("    Re-run with --with-ide to update it, or update from the IDE UI.")
 
     # 3. Update UV tools (specify-cli & scrapling)
     for tool_name, pkg in [("specify", "specify-cli"), ("scrapling", "scrapling")]:
@@ -310,11 +322,14 @@ def apply_updates(statuses):
         pull_res = subprocess.run(["git", "pull", "origin", "main"], cwd=CORTEX_REPO_DIR, capture_output=True, text=True)
         if pull_res.returncode == 0:
             print("  ✓ Pulled latest repository changes.")
-            # Run install.sh to refresh any updated rules, commands, or hooks
+            # Deliberately NOT re-running install.sh. The installer mutates the
+            # system install (wrappers, hooks, settings); running it silently from
+            # an updater means a `git pull` can reconfigure the machine with no
+            # review. Surface the command and let the operator decide.
             install_sh = os.path.join(CORTEX_REPO_DIR, "install.sh")
             if os.path.isfile(install_sh):
-                subprocess.run(["bash", install_sh], cwd=CORTEX_REPO_DIR, capture_output=True)
-                print("  ✓ Synchronized system hooks and scripts via installer.")
+                print("    Repository content changed. To apply it to your install, review then run:")
+                print(f"      bash {install_sh}")
         else:
             print(f"  ⚠ Git pull warning: {pull_res.stderr.strip()[:100]}")
 
@@ -325,6 +340,8 @@ def main():
     parser = argparse.ArgumentParser(description="Claude Cortex Multi-Component Update Manager")
     parser.add_argument("action", nargs="?", default="check", choices=["check", "status", "apply", "upgrade", "sync"])
     parser.add_argument("--json", action="store_true", help="Output JSON results")
+    parser.add_argument("--with-ide", action="store_true",
+                        help="Also update the IDE extension (restarts the extension host)")
     args = parser.parse_args()
 
     statuses = get_all_statuses()
@@ -336,7 +353,7 @@ def main():
     if args.action in ("check", "status"):
         print_status_table(statuses)
     elif args.action in ("apply", "upgrade", "sync"):
-        apply_updates(statuses)
+        apply_updates(statuses, with_ide=args.with_ide)
 
 if __name__ == "__main__":
     main()
