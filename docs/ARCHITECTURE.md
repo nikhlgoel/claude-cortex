@@ -149,7 +149,8 @@ being complete is worth more than one that does.
 - Configure IDEs without touching extension files
 - Store and recall project lessons (`cc palace` — real, tag-indexed)
 - Track learned behavioural patterns with confidence (`instinct-cli`, real store)
-- Retrieve real arXiv papers (`cc research` — real, live API)
+- Retrieve real arXiv papers (`cc research`) and browse a live model catalog
+  with real OpenRouter pricing (`cc model`), cached and graceful offline
 - **Analyze binaries** with no network route out: decompile to C and produce a
   capability report from imports (`cc ghidra` — verified against known binaries)
 - **Static risk analysis of source** with file/line/mechanism findings
@@ -164,7 +165,6 @@ into a real analyzer and `think` was removed rather than left pretending.)
 
 | Limitation | Detail |
 | :--- | :--- |
-| **`cc model` pricing is a snapshot** | Static table of 22 models. Honestly labelled; confirm against the provider. Not yet a live feed. |
 | **`cc status` is not a usage API** | Reads Claude Code's local cache. No cache → unknown (never guessed). |
 | **`cc dream` is not a full linter** | Real, but pattern/AST-based: it finds the failure classes it knows (swallowed errors, non-atomic writes, missing timeouts, injection), not everything. |
 | **Ghidra loses inlined functions** | A `static` the compiler inlined has no boundary in the output; type inference near varargs can be confidently wrong. |
@@ -218,13 +218,13 @@ check** that fails on any change it did not declare.
 
 Done since the first draft: `dream` rewritten into a real analyzer, `think`
 removed, command files triaged (130 → 74), MCP server built, integrity
-verification added, the instinct store made to work standalone.
+verification added, the instinct store made to work standalone, the model
+catalog made live.
 
 **Near term**
 1. Verify the Windows `.cmd` shims — no container covers them today.
 2. Manual Antigravity verification at install time (checklist in `HANDOVER.md`).
-3. Replace the static model catalog with a live fetch, or drop the prices.
-4. Sign the integrity manifest, so replacing files *and* the manifest is caught.
+3. Sign the integrity manifest, so replacing files *and* the manifest is caught.
 
 **Medium term**
 5. Per-profile **usage history**, so capacity reporting stops depending on a cache
