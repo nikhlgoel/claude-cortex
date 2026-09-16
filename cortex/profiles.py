@@ -91,8 +91,7 @@ def set_active(name: str) -> None:
     name = normalize_name(name)
     try:
         os.makedirs(profiles_dir(), exist_ok=True)
-        with open(current_profile_file(), "w", encoding="utf-8") as fh:
-            fh.write(name)
+        jsonfile.write_text(current_profile_file(), name)
     except OSError as exc:
         raise CortexError(
             f"cannot record the active profile in {profiles_dir()}: {exc.strerror}"
@@ -134,8 +133,7 @@ def ensure_structure(name: str, mode: str = "synced") -> str:
     target = profile_dir(name)
     try:
         os.makedirs(target, exist_ok=True)
-        with open(os.path.join(target, ".profile_mode"), "w", encoding="utf-8") as fh:
-            fh.write(mode)
+        jsonfile.write_text(os.path.join(target, ".profile_mode"), mode)
     except OSError as exc:
         raise CortexError(
             f"cannot create the profile directory {target}: {exc.strerror}"
@@ -244,8 +242,7 @@ def seed_identity(name: str) -> bool:
 
     # Cache the email so status listings work without spawning the CLI.
     try:
-        with open(os.path.join(target, ".profile_email"), "w", encoding="utf-8") as fh:
-            fh.write(email or "")
+        jsonfile.write_text(os.path.join(target, ".profile_email"), email or "")
     except OSError:
         pass
     return True

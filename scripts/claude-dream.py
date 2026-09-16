@@ -1,250 +1,489 @@
 #!/usr/bin/env python3
 """
-NOTE: this script generates a fixed review FRAMEWORK - a checklist of failure
-categories to reason against. It performs no analysis of its own and makes no
-model or network calls; the output is identical for any topic. The analysis is
-done by Claude, using this as the frame. Earlier documentation described it as a
-simulation engine, which it is not.
+Dream - counterfactual risk analysis.
 
-Claude Cortex - Cognitive Dream Simulation Engine (REM Mode)
-Replicates the human brain's Default Mode Network & REM sleep generative simulation:
-Runs fast, unconstrained counterfactual scenario modeling across 4 dimensions:
-1. Technical & Security Crucible (Chaos engineering, race conditions, edge-case crashes)
-2. Business & Economic Stress (Pricing, churn, unit economics, market viability)
-3. Psychological & UX Friction (Cognitive load, user mental models, delight factors)
-4. Creative & Divergent Leap (Unorthodox architectural breakthroughs)
-Automatically consolidates simulation lessons into the Cognitive Memory Palace.
+This used to print a fixed checklist. Two unrelated topics produced byte-identical
+output, because it did no analysis at all: it named categories of failure and left
+the reader to do the work. That is not an engine, and it was documented as one.
+
+It now reads the code and reports findings with a file, a line, and the mechanism
+by which the thing fails. A finding names something that is actually there.
+
+Design notes
+------------
+Every detector is written to be *quiet*. A risk scanner that reports fifty
+maybes gets ignored after the second run, which is worse than having no scanner:
+it trains you to skim. So each rule either has a concrete failure mode or it does
+not ship. Where a rule cannot avoid false positives, it says what would make the
+finding benign, so dismissing it is quick.
+
+Findings are ranked by whether the failure is silent. A crash gets noticed; a
+swallowed error or a lost write does not, so those rank higher.
+
+Usage:
+    claude-dream.py                     analyse uncommitted changes
+    claude-dream.py --all               analyse the whole tree
+    claude-dream.py --path DIR          analyse a directory
+    claude-dream.py --since HEAD~5      analyse a commit range
+    claude-dream.py --json
 """
 
-import os
-import sys
-import json
+from __future__ import annotations
+
 import argparse
+import ast
+import json
+import os
+import re
 import subprocess
-from datetime import datetime, timezone
+import sys
 
-PALACE_SCRIPT = os.path.expanduser("~/.claude/scripts/claude-palace.py")
+# Severity ranks by how quietly the failure happens, not by how dramatic it is.
+SILENT = "SILENT"      # wrong results, no error - the worst kind
+LOUD = "LOUD"          # crashes or hangs; noticed, still bad
+FRAGILE = "FRAGILE"    # works now, breaks under load, scale or concurrency
+RANK = {SILENT: 0, LOUD: 1, FRAGILE: 2}
 
-DREAM_CHAMBERS = {
-    "technical": {
-        "title": "Technical & Security Crucible",
-        "icon": "💥",
-        "desc": "Simulates edge-case crashes, race conditions, auth bypasses, and failure modes."
-    },
-    "business": {
-        "title": "Market & Economic Stress-Test",
-        "icon": "📈",
-        "desc": "Simulates pricing resistance, churn, user friction, unit economics, and viability."
-    },
-    "psychology": {
-        "title": "Psychological & Human UX Simulation",
-        "icon": "🧠",
-        "desc": "Simulates user cognitive overload, mental model mismatch, and friction points."
-    },
-    "creative": {
-        "title": "Divergent Innovation & Leap",
-        "icon": "✨",
-        "desc": "Simulates radical simplifications, zero-overhead shortcuts, and novel paradigms."
-    }
+
+class Finding:
+    def __init__(self, severity, chamber, path, line, title, mechanism,
+                 code="", benign_if=""):
+        self.severity = severity
+        self.chamber = chamber
+        self.path = path
+        self.line = line
+        self.title = title
+        self.mechanism = mechanism
+        self.code = code
+        self.benign_if = benign_if
+
+    def as_dict(self):
+        return {
+            "severity": self.severity, "chamber": self.chamber,
+            "file": self.path, "line": self.line, "title": self.title,
+            "mechanism": self.mechanism, "code": self.code,
+            "benign_if": self.benign_if,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Python AST analysis. The AST is used rather than regex wherever the question
+# is structural, because "is this except clause empty" is not a text question.
+# ---------------------------------------------------------------------------
+
+#: Expressions whose value originates outside this program.
+EXTERNAL_SOURCES = (
+    "input", "sys.argv", "os.environ", "os.getenv", "getenv",
+    "request.args", "request.form", "request.json", "sys.stdin.read",
+)
+
+
+class PythonVisitor(ast.NodeVisitor):
+    def __init__(self, path, source):
+        self.path = path
+        self.lines = source.splitlines()
+        self.findings = []
+        self.function_stack = []
+        # Shallow taint tracking: names assigned from an external source.
+        #
+        # Without this, the path-join rule fired on every os.path.join in the
+        # file - five findings, all of them joins of already-normalized internal
+        # values. A rule that is wrong five times out of five is worse than
+        # absent: it teaches the reader to skim past the section it lives in.
+        self.tainted = set()
+
+    def code_at(self, node):
+        index = getattr(node, "lineno", 1) - 1
+        if 0 <= index < len(self.lines):
+            return self.lines[index].strip()[:120]
+        return ""
+
+    def add(self, severity, chamber, node, title, mechanism, benign_if=""):
+        self.findings.append(Finding(
+            severity, chamber, self.path, getattr(node, "lineno", 0),
+            title, mechanism, self.code_at(node), benign_if))
+
+    # -- swallowed errors ---------------------------------------------------
+    def visit_ExceptHandler(self, node):
+        body = node.body
+        only_pass = len(body) == 1 and isinstance(body[0], ast.Pass)
+        bare = node.type is None
+        broad = isinstance(node.type, ast.Name) and node.type.id in (
+            "Exception", "BaseException")
+
+        if only_pass and (bare or broad):
+            self.add(
+                SILENT, "error handling", node,
+                "Exception swallowed with no trace",
+                "The failure leaves nothing behind: no log line, no re-raise, "
+                "no return value change. When this fires the caller proceeds on "
+                "the assumption the operation succeeded, and the first symptom "
+                "appears somewhere unrelated.",
+                benign_if="the operation is genuinely optional AND a comment "
+                          "says so")
+        elif bare:
+            self.add(
+                FRAGILE, "error handling", node,
+                "Bare except catches everything",
+                "A bare except also catches KeyboardInterrupt and SystemExit, so "
+                "Ctrl+C and process shutdown get absorbed by code that meant to "
+                "handle an IO error.")
+        self.generic_visit(node)
+
+    # -- mutable default arguments -----------------------------------------
+    def visit_FunctionDef(self, node):
+        self.function_stack.append(node.name)
+        for default in node.args.defaults + node.args.kw_defaults:
+            if isinstance(default, (ast.List, ast.Dict, ast.Set)):
+                self.add(
+                    SILENT, "state", default,
+                    f"Mutable default argument in {node.name}()",
+                    "The default is created once at definition time and shared "
+                    "by every call that omits the argument. One caller's "
+                    "appends are visible to the next, and the bug only appears "
+                    "on the second call.")
+        self.generic_visit(node)
+        self.function_stack.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Assign(self, node):
+        source = ast.unparse(node.value) if hasattr(ast, "unparse") else ""
+        if any(src in source for src in EXTERNAL_SOURCES):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.tainted.add(target.id)
+        self.generic_visit(node)
+
+    # -- calls: timeouts, shells, deserialization --------------------------
+    def visit_Call(self, node):
+        name = self._call_name(node)
+        kwargs = {kw.arg for kw in node.keywords if kw.arg}
+
+        # Network and subprocess calls without a timeout hang forever.
+        if name in ("requests.get", "requests.post", "requests.put",
+                    "requests.delete", "requests.head", "requests.request",
+                    "urlopen", "urllib.request.urlopen"):
+            if "timeout" not in kwargs:
+                self.add(
+                    LOUD, "resource", node,
+                    f"{name}() with no timeout",
+                    "Python's default socket timeout is None, so a peer that "
+                    "accepts the connection and never replies blocks this "
+                    "thread indefinitely. A hung command looks like a crash "
+                    "with none of the diagnostics.")
+
+        if name in ("subprocess.run", "subprocess.call", "subprocess.check_call",
+                    "subprocess.check_output", "subprocess.Popen"):
+            if "timeout" not in kwargs and name != "subprocess.Popen":
+                self.add(
+                    FRAGILE, "resource", node,
+                    f"{name}() with no timeout",
+                    "A child process that never exits blocks the parent for "
+                    "ever. This matters most for anything spawned in a loop or "
+                    "on a code path a user waits on.")
+            for keyword in node.keywords:
+                if keyword.arg == "shell" and _is_true(keyword.value):
+                    self.add(
+                        SILENT, "security", node,
+                        f"{name}(shell=True)",
+                        "The command string is parsed by a shell, so any "
+                        "interpolated value can inject further commands via ;, "
+                        "|, $(), or backticks. Passing an argv list removes the "
+                        "shell from the picture entirely.",
+                        benign_if="the command is a fixed literal with no "
+                                  "interpolation")
+
+        if name in ("pickle.load", "pickle.loads", "yaml.load", "marshal.loads"):
+            self.add(
+                SILENT, "security", node,
+                f"{name}() on possibly untrusted data",
+                "These constructors execute code during deserialization. If the "
+                "input can be influenced, this is arbitrary code execution "
+                "rather than a parsing bug.",
+                benign_if="the input is produced by this program and never "
+                          "leaves the machine")
+
+        if name in ("eval", "exec"):
+            self.add(
+                SILENT, "security", node, f"{name}() call",
+                "Evaluates whatever string it is given. If any part of that "
+                "string derives from input, this executes it.")
+
+        # os.path.join with an EXTERNALLY-SOURCED variable is the traversal
+        # shape. Joining an internal value is ordinary path building and
+        # reporting it is noise.
+        if name == "os.path.join" and len(node.args) >= 2:
+            if any(isinstance(a, ast.Name) and a.id in self.tainted
+                   for a in node.args[1:]):
+                self.add(
+                    FRAGILE, "security", node,
+                    "Path built by joining a variable",
+                    "os.path.join discards everything before an absolute "
+                    "component, and does not collapse '..'. A value of "
+                    "'../../etc/passwd' or '/etc/passwd' escapes the intended "
+                    "directory.",
+                    benign_if="the variable is validated, or comes from a fixed "
+                              "set")
+
+        self.generic_visit(node)
+
+    def _call_name(self, node):
+        func = node.func
+        parts = []
+        while isinstance(func, ast.Attribute):
+            parts.append(func.attr)
+            func = func.value
+        if isinstance(func, ast.Name):
+            parts.append(func.id)
+        return ".".join(reversed(parts))
+
+    # -- non-atomic writes --------------------------------------------------
+    def visit_With(self, node):
+        for item in node.items:
+            call = item.context_expr
+            if isinstance(call, ast.Call) and self._call_name(call) == "open":
+                mode = ""
+                if len(call.args) >= 2 and isinstance(call.args[1], ast.Constant):
+                    mode = str(call.args[1].value)
+                for keyword in call.keywords:
+                    if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
+                        mode = str(keyword.value.value)
+                if "w" in mode or "a" in mode:
+                    target = ""
+                    if call.args and isinstance(call.args[0], ast.Constant):
+                        target = str(call.args[0].value)
+                    if _looks_like_config(target) or _looks_like_config(
+                            self.code_at(call)):
+                        self.add(
+                            SILENT, "state", call,
+                            "Config file written in place, not atomically",
+                            "open(mode='w') truncates immediately. If the "
+                            "process dies, the disk fills, or two processes "
+                            "write at once, the file is left truncated or "
+                            "interleaved - and this is a file something else "
+                            "depends on. Write to a temp file and os.replace().",
+                            benign_if="the file is disposable")
+        self.generic_visit(node)
+
+
+def _is_true(node):
+    return isinstance(node, ast.Constant) and node.value is True
+
+
+def _looks_like_config(text):
+    return bool(re.search(r"settings|config|\.json|credential|profile|state",
+                          text, re.IGNORECASE))
+
+
+# ---------------------------------------------------------------------------
+# Shell analysis - regex, because shell has no usable AST here.
+# ---------------------------------------------------------------------------
+
+SHELL_RULES = [
+    (SILENT, "security",
+     re.compile(r'rm\s+-rf?\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*'),
+     "rm -rf on an unguarded variable",
+     "If the variable is empty this becomes 'rm -rf /' or 'rm -rf ' with the "
+     "next argument. An unset variable under 'set -u' errors, but an EMPTY one "
+     "does not.",
+     "the variable is checked non-empty immediately above"),
+    (SILENT, "error handling",
+     re.compile(r'^\s*(?!#)[^|&\n]*\|\s*(bash|sh)\b'),
+     "Piping a downloaded script into a shell",
+     "Executes whatever the server returns, unreviewed, with your privileges. "
+     "A compromised or redirected host owns the machine.",
+     ""),
+    (FRAGILE, "error handling",
+     re.compile(r'^\s*cd\s+[^\s;&|]+\s*$'),
+     "cd without checking it succeeded",
+     "If the directory is missing, cd fails and the script continues in the "
+     "previous directory - so subsequent relative paths act on the wrong tree.",
+     "the script uses 'set -e'"),
+]
+
+
+def analyse_shell(path, source):
+    findings = []
+    has_set_e = bool(re.search(r"^\s*set\s+-[a-z]*e", source, re.MULTILINE))
+    for number, line in enumerate(source.splitlines(), 1):
+        if line.strip().startswith("#"):
+            continue
+        for severity, chamber, pattern, title, mechanism, benign in SHELL_RULES:
+            if pattern.search(line):
+                if "cd without" in title and has_set_e:
+                    continue
+                findings.append(Finding(severity, chamber, path, number, title,
+                                        mechanism, line.strip()[:120], benign))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Target selection
+# ---------------------------------------------------------------------------
+
+def git_files(since=None):
+    try:
+        if since:
+            cmd = ["git", "diff", "--name-only", f"{since}...HEAD"]
+        else:
+            cmd = ["git", "diff", "--name-only", "HEAD"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        files = [f for f in result.stdout.split("\n") if f.strip()]
+        if not files and not since:
+            result = subprocess.run(["git", "diff", "--name-only", "HEAD~1...HEAD"],
+                                    capture_output=True, text=True, timeout=60)
+            files = [f for f in result.stdout.split("\n") if f.strip()]
+        return [f for f in files if os.path.isfile(f)]
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def walk(root):
+    skip = {".git", "__pycache__", "node_modules", "build", "dist", ".venv"}
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for name in filenames:
+            if name.endswith((".py", ".sh", ".bash")):
+                out.append(os.path.join(dirpath, name))
+    return out
+
+
+def analyse(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+    except OSError:
+        return []
+
+    if path.endswith(".py"):
+        try:
+            tree = ast.parse(source, filename=path)
+        except SyntaxError as exc:
+            return [Finding(LOUD, "correctness", path, exc.lineno or 0,
+                            "File does not parse",
+                            f"Python cannot parse this file: {exc.msg}. "
+                            f"Anything importing it fails at import time.")]
+        visitor = PythonVisitor(path, source)
+        visitor.visit(tree)
+        return visitor.findings
+
+    if path.endswith((".sh", ".bash")):
+        return analyse_shell(path, source)
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
+
+CHAMBER_ORDER = ["security", "state", "error handling", "resource", "correctness"]
+
+HEADERS = {
+    "security": "SECURITY - input reaching something that executes",
+    "state": "STATE - data that is shared, lost, or corrupted",
+    "error handling": "ERROR HANDLING - failures that leave no trace",
+    "resource": "RESOURCE - unbounded waits and growth",
+    "correctness": "CORRECTNESS",
 }
 
-def analyze_context(target_path=None, prompt_topic=""):
-    context_text = ""
-    effective_target = target_path or os.getcwd()
-    if effective_target and os.path.exists(effective_target):
-        if os.path.isfile(effective_target):
-            try:
-                with open(effective_target) as f:
-                    context_text = f.read()[:8000]
-            except Exception:
-                pass
-        elif os.path.isdir(effective_target):
-            files = []
-            IGNORED_DIRS = {".git", "node_modules", ".dart_tool", "build", "dist", "target", "venv", ".venv", "__pycache__", ".idea", ".vscode", ".claude-backups"}
-            for root, dirs, fnames in os.walk(effective_target):
-                dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
-                for fn in fnames:
-                    if fn.endswith(('.ts', '.js', '.py', '.dart', '.go', '.rs', '.json', '.md', '.toml', '.yaml', '.yml')):
-                        rel = os.path.relpath(os.path.join(root, fn), effective_target)
-                        files.append(rel)
-                        if len(files) >= 100:
-                            break
-                if len(files) >= 100:
-                    break
-            if files:
-                context_text = f"Project directory with {len(files)} source files. Key files:\n" + "\n".join(files[:30])
 
-    if not context_text:
-        context_text = prompt_topic or "Current project state and architecture"
+def render(findings, scanned):
+    out = []
+    add = out.append
+    add("=" * 74)
+    add("  Dream - counterfactual risk analysis")
+    add("=" * 74)
+    add(f"  {scanned} file(s) analysed, {len(findings)} finding(s)")
+    add("")
 
-    return context_text
+    if not findings:
+        add("  Nothing found. The detectors here are deliberately quiet: each")
+        add("  one has a concrete failure mode, so an empty report means the")
+        add("  patterns it knows about are absent - not that the code is safe.")
+        add("=" * 74)
+        return "\n".join(out)
 
-def normalize_chamber(c):
-    c = c.lower().strip()
-    if c in ["tech", "technical", "security", "sec"]:
-        return "technical"
-    elif c in ["biz", "business", "econ", "economic", "economics"]:
-        return "business"
-    elif c in ["psych", "psychology", "ux", "ui", "human"]:
-        return "psychology"
-    elif c in ["creative", "innovation", "divergent", "leap"]:
-        return "creative"
-    return c if c in DREAM_CHAMBERS else "technical"
+    by_chamber = {}
+    for finding in findings:
+        by_chamber.setdefault(finding.chamber, []).append(finding)
 
-def run_simulation(chambers=None, target_path=None, topic=""):
-    context = analyze_context(target_path, topic)
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    for chamber in CHAMBER_ORDER:
+        items = by_chamber.get(chamber)
+        if not items:
+            continue
+        items.sort(key=lambda f: (RANK[f.severity], f.path, f.line))
+        add("-" * 74)
+        add(f"  {HEADERS.get(chamber, chamber.upper())}")
+        add("-" * 74)
+        for finding in items:
+            add(f"  [{finding.severity}] {finding.title}")
+            add(f"      {finding.path}:{finding.line}")
+            if finding.code:
+                add(f"      | {finding.code}")
+            for chunk in _wrap(finding.mechanism, 66):
+                add(f"      {chunk}")
+            if finding.benign_if:
+                add(f"      Benign if: {finding.benign_if}")
+            add("")
 
-    if not chambers:
-        chambers_to_run = list(DREAM_CHAMBERS.keys())
-    else:
-        chambers_to_run = [normalize_chamber(c) for c in chambers]
-        # De-duplicate while preserving order
-        chambers_to_run = list(dict.fromkeys(chambers_to_run))
+    counts = {}
+    for finding in findings:
+        counts[finding.severity] = counts.get(finding.severity, 0) + 1
+    add("=" * 74)
+    add("  " + "   ".join(f"{sev}: {counts.get(sev, 0)}"
+                          for sev in (SILENT, LOUD, FRAGILE)))
+    add("  SILENT ranks highest: a crash gets noticed, a wrong answer does not.")
+    add("=" * 74)
+    return "\n".join(out)
 
-    print("======================================================================")
-    print("           Dream Engine - counterfactual review framework")
-    print("======================================================================")
-    print(f"Timestamp: {now_str}")
-    print(f"Focus:     {topic or target_path or 'Entire Project Architecture'}")
-    print(f"Chambers:  {', '.join(c.upper() for c in chambers_to_run)}\n")
 
-    findings = []
+def _wrap(text, width):
+    words, line, lines = text.split(), "", []
+    for word in words:
+        if len(line) + len(word) + 1 > width:
+            lines.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        lines.append(line)
+    return lines
 
-    for ckey in chambers_to_run:
-        cinfo = DREAM_CHAMBERS.get(ckey, DREAM_CHAMBERS["technical"])
-        print(f"  {cinfo['icon']} Simulating: {cinfo['title']}...")
-        print(f"     Scenario parameters: {cinfo['desc']}")
-
-        # Perform domain-specific heuristic & counterfactual analysis
-        scenario_results = generate_scenarios(ckey, context, topic)
-        findings.append((cinfo, scenario_results))
-        print(f"     -> {len(scenario_results['nightmares'])} nightmare vectors identified, {len(scenario_results['breakthroughs'])} daybreak insights.")
-
-    print("\n======================================================================")
-    print("                  ✨ Dream Synthesis & Reality Check")
-    print("======================================================================")
-
-    for cinfo, sres in findings:
-        print(f"\n{cinfo['icon']} [{cinfo['title'].upper()}]")
-        print("  ⚠️ NIGHTMARE SCENARIOS (Potential Failure Modes):")
-        for n in sres["nightmares"]:
-            print(f"    • {n}")
-        print("  💡 DAYBREAK INSIGHTS (Counter-Measures & Innovations):")
-        for b in sres["breakthroughs"]:
-            print(f"    ✓ {b}")
-
-    # Memory Palace Auto-Consolidation
-    print("\n======================================================================")
-    print("            🏰 Consolidating Dream Wisdom into Memory Palace")
-    print("======================================================================")
-
-    all_nightmares = []
-    all_breakthroughs = []
-    for _, sres in findings:
-        all_nightmares.extend(sres["nightmares"])
-        all_breakthroughs.extend(sres["breakthroughs"])
-
-    graveyard_summary = "\n".join(f"- {n}" for n in all_nightmares[:4])
-    decisions_summary = "\n".join(f"- {b}" for b in all_breakthroughs[:4])
-
-    # Record to Memory Palace if available
-    try:
-        palace_cmd = [sys.executable, PALACE_SCRIPT, "remember", "--room", "graveyard",
-                      "--title", f"Dream Simulation Nightmare Safeguards: {topic or 'System'}",
-                      "--content", graveyard_summary, "--tags", "dream", "simulation", "safeguard", "risk"]
-        subprocess.run(palace_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        palace_cmd2 = [sys.executable, PALACE_SCRIPT, "remember", "--room", "decisions",
-                       "--title", f"Dream Simulation Daybreak Breakthroughs: {topic or 'System'}",
-                       "--content", decisions_summary, "--tags", "dream", "innovation", "decision"]
-        subprocess.run(palace_cmd2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print("✓ Nightmares deposited into: 🛡️ The Graveyard (Past Pitfalls & Safeguards)")
-        print("✓ Breakthroughs deposited into: ⚖️ The Council Chamber (Strategic Decisions)")
-    except Exception:
-        pass
-
-    print("======================================================================")
-    print("Simulation complete. Use /palace or claude palace to inspect consolidated memory.")
-
-def generate_scenarios(chamber_key, context, topic):
-    # Generates deep domain scenario simulations
-    if chamber_key == "technical":
-        return {
-            "nightmares": [
-                "Unbounded concurrency / race condition when multiple requests update shared state without atomic locking.",
-                "Silent credential or auth drift: tokens expire mid-operation without automatic refresh handling.",
-                "Large payload exhaustion: unstreamed data payloads exceed memory thresholds, risking OOM kills."
-            ],
-            "breakthroughs": [
-                "Implement idempotent state mutations with monotonic timestamps or transactional rollback boundaries.",
-                "Pre-flight token & quota validation before issuing expensive multi-step executions.",
-                "Enforce strict chunked streaming with 20KB sliding buffer windows."
-            ]
-        }
-    elif chamber_key == "business":
-        return {
-            "nightmares": [
-                "User churn from unexpected rate limit stops in high-urgency workflows.",
-                "Excessive token burn on simple tasks driving unit economic cost beyond viable thresholds.",
-                "Steep learning curve: developers abandon tools requiring more than 2 CLI flags or manual config."
-            ],
-            "breakthroughs": [
-                "Autonomous transparent quota failover keeps developer velocity unbroken (zero churn trigger).",
-                "Model tier routing: default simple tasks to Haiku 4.5 / Sonnet 5, reserving Opus 5 for high-complexity architecture.",
-                "Zero-config auto-discovery: infer intent from project structure rather than requiring manual setup."
-            ]
-        }
-    elif chamber_key == "psychology":
-        return {
-            "nightmares": [
-                "Cognitive overload: dumping 50 lines of status logs overwhelms user attention and causes decision fatigue.",
-                "Loss of agency: agent modifies critical code silently without verification checkpoints, inducing anxiety.",
-                "Broken mental model: user expects commands to behave like Unix pipes but agent acts conversationally."
-            ],
-            "breakthroughs": [
-                "Live Pairing Protocol: check in at atomic step boundaries and auto-start immediately upon agreement.",
-                "High-signal compact banners: replace walls of text with 1-line glanceable status summaries.",
-                "Proactive amendment prompting: 'Any extra amendments or shall we continue?' validates human control."
-            ]
-        }
-    else:  # creative
-        return {
-            "nightmares": [
-                "Incrementalism trap: solving local optimization problems while missing a 10x architectural leap.",
-                "Monolithic coupling: tightly binding features into a single script preventing cross-platform distribution."
-            ],
-            "breakthroughs": [
-                "Cognitive Palace & Dream simulation synergy: simulate tests before writing code, saving 80% debug time.",
-                "Universal self-contained portable pack: 1-click installable across Linux, macOS, and Windows with zero leaks."
-            ]
-        }
 
 def main():
-    parser = argparse.ArgumentParser(description="Claude Code Cognitive Dream Engine")
-    parser.add_argument("args", nargs="*", help="Subcommand (run/simulate) or topic words")
-    parser.add_argument("--topic", help="Feature, idea, or problem to simulate")
-    parser.add_argument("--chambers", "--chamber", "-c", help="Comma-separated chambers (tech, biz, psych, creative)")
-    parser.add_argument("--role", "-r", help="Alias for chambers")
-    parser.add_argument("--target", "-t", help="Target source file or directory to stress-test")
-    parser.add_argument("--quick", "-q", action="store_true", help="Fast 2-chamber simulation (tech + creative)")
-    parsed, unknown = parser.parse_known_args()
+    parser = argparse.ArgumentParser(description="Counterfactual risk analysis")
+    parser.add_argument("--path", help="analyse a directory")
+    parser.add_argument("--since", help="analyse a commit range, e.g. HEAD~5")
+    parser.add_argument("--all", action="store_true", help="analyse the whole tree")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("topic", nargs="*", help=argparse.SUPPRESS)
+    args = parser.parse_args()
 
-    pos_args = list(parsed.args) + list(unknown)
-    if pos_args and pos_args[0].lower() in ["run", "simulate", "sim", "start"]:
-        pos_args = pos_args[1:]
-
-    topic = parsed.topic or (" ".join(pos_args) if pos_args else "")
-
-    raw_chambers = parsed.chambers or parsed.role
-    if parsed.quick:
-        chambers = ["technical", "creative"]
-    elif raw_chambers:
-        chambers = [c.strip() for c in raw_chambers.split(",") if c.strip()]
+    if args.path:
+        targets = walk(args.path)
+    elif args.all:
+        targets = walk(".")
     else:
-        chambers = list(DREAM_CHAMBERS.keys())
+        targets = git_files(args.since)
+        if not targets:
+            targets = walk(".")
 
-    run_simulation(chambers=chambers, target_path=parsed.target, topic=topic)
+    findings = []
+    for path in targets:
+        findings.extend(analyse(path))
+
+    if args.json:
+        print(json.dumps({
+            "scanned": len(targets),
+            "findings": [f.as_dict() for f in findings],
+        }, indent=2))
+    else:
+        print(render(findings, len(targets)))
+
+    return 1 if any(f.severity == SILENT for f in findings) else 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

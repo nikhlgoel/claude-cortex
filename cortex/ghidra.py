@@ -123,6 +123,15 @@ def cmd_analyze(args):
     # complete. Read-only input mount and a dropped capability set follow the
     # same principle: assume the analysis target may itself be hostile, since
     # the whole point is examining untrusted binaries.
+    scripts = os.path.join(tools_dir(), "scripts")
+
+    # The project directory must already exist - Ghidra will not create it, and
+    # the failure ("Directory not found") does not say so.
+    project = os.path.join(out_dir, "project")
+    os.makedirs(project, exist_ok=True)
+
+    source_out = os.path.join(out_dir, f"{name}.c")
+
     cmd = [
         "docker", "run", "--rm",
         "--network", "none",
@@ -130,16 +139,31 @@ def cmd_analyze(args):
         "--security-opt", "no-new-privileges",
         "-v", f"{host_dir}:/work/in:ro",
         "-v", f"{canonical_dir(out_dir)}:/work/out",
+        "-v", f"{canonical_dir(scripts)}:/work/scripts:ro",
         f"cortex-ghidra:{PINNED_REF}",
         "/work/out/project", "cortex",
         "-import", f"/work/in/{name}",
+        "-scriptPath", "/work/scripts",
+        "-postScript", "DecompileToC.java", f"/work/out/{name}.c",
         "-deleteProject", "-analysisTimeoutPerFile", "600",
     ] + extra
 
     print(f"Analyzing {name} with no network access.")
-    print(f"Output: {out_dir}")
     print()
-    return _run(cmd)
+    rc = _run(cmd)
+
+    if rc == 0 and os.path.exists(source_out):
+        with open(source_out, encoding="utf-8", errors="replace") as fh:
+            functions = sum(1 for line in fh if line.startswith("// ----"))
+        print()
+        print(f"  Decompiled C: {source_out}")
+        print(f"  {functions} function(s) recovered.")
+        print()
+        print("  This is recovered logic, not the original source. Verified against")
+        print("  a binary whose source we wrote: recursion, arithmetic and constants")
+        print("  come back faithfully; functions the compiler inlined lose their")
+        print("  boundaries and appear merged into their caller.")
+    return rc
 
 
 def cmd_update(args):

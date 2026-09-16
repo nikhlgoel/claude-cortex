@@ -84,6 +84,32 @@ def write(path, data, backup=True):
         raise
 
 
+def write_text(path, text):
+    """Atomically write a small text file.
+
+    Found by the risk analyser: current_profile, .profile_mode and
+    .profile_email were written with a plain open(mode="w"), which truncates
+    immediately. A process killed between truncate and write leaves the file
+    empty, and an empty current_profile means the next launch silently falls
+    back to a different profile - a wrong answer with no error. JSON writes were
+    already atomic; these were not.
+    """
+    path = os.fspath(path)
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".cortex-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def merge(path, updates, backup=True):
     """Shallow-merge ``updates`` into the JSON object at ``path``."""
     current = read(path, {})

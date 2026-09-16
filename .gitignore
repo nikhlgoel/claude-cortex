@@ -30,3 +30,7 @@ dist/
 .DS_Store
 Thumbs.db
 *.pyc
+
+# local Ghidra verification artifacts
+.ghidra-test/
+ghidra-out/
