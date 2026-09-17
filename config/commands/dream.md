@@ -75,9 +75,25 @@ the failure mode.
 - If research turns up little, say so — absence of prior art is information
   (genuinely novel, or nobody found it worth doing; which one matters).
 
-**Capture the raw findings as you go** — you will save them verbatim in Phase 4 as
-`research.md`, so the evidence outlives the session and the next revisit starts
-from facts, not memory.
+**Keep a real research record, not a summary.** As you go, build `research.md`
+(saved verbatim in Phase 4) to a genuine depth — it is the evidence the whole
+exploration rests on, and a thin one is the tell that the analysis is guessing:
+
+- **One entry per source**, each with the claim, the **specific number or quote**,
+  and the source name/URL — not a paragraph that blends five sources into a vibe.
+- **Name the precedents concretely.** Not "some companies use hybrids" but *which*
+  ones, *what* they charge, and *what happened* (e.g. "JetBrains: subscription +
+  perpetual-fallback since 2015, bootstrapped to $400M"; "Sublime: $99 perpetual
+  individual, business seats annual"). Concrete cases are what let the reader
+  transfer the lesson to their own situation.
+- **Separate FACT (sourced) from INFERENCE (your reasoning)** in two clearly
+  labelled sections. Never let one wear the other's clothes.
+- **Depth scales with stakes.** A quick concept may need a handful of sources; a
+  business or irreversible decision warrants going until the findings *converge or
+  contradict* — a couple of searches that only skim the surface is not enough, and
+  saving that thin record is the failure the user will notice.
+- If a claim matters and you could not source it, say so explicitly rather than
+  quietly dropping it — a known gap is worth more than a confident blank.
 
 ---
 
@@ -230,7 +246,9 @@ document in addition to the Markdown — but the Markdown save above always happ
 ## The bar
 
 - Specific to this concept, always. Generic observations are noise.
-- Grounded where factual; cite, don't speculate about the knowable.
+- Grounded where factual; cite, don't speculate about the knowable. The saved
+  `research.md` is detailed and per-source — named precedents with real numbers,
+  not a thin summary. A shallow research record fails the run on its own.
 - Psychology treated as evidence-backed analysis, not vibes — for business, it is
   the deep lens, not a closing remark.
 - Ends in a **direction** with a concrete first move, not a neutral summary.
