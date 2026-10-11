@@ -21,6 +21,10 @@ history.jsonl
 projects/
 file-history/
 
+# Per-machine Claude Code permissions, and reports the test runner regenerates
+.claude/settings.local.json
+tests/METRICS_REPORT.*
+
 # Distribution archives (tracked in releases/ or built dynamically)
 dist/
 *.tmp

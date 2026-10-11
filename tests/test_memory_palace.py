@@ -22,6 +22,8 @@ import time
 import shutil
 import tempfile
 import unittest
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _guard import LATENCY_SCALE  # noqa: E402
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT_DIR, "scripts"))
@@ -67,7 +69,7 @@ class TestMemoryPalace(unittest.TestCase):
 
         self.assertIsNotNone(mem_id)
         self.assertTrue(mem_id.startswith("blue_"))
-        self.assertLess(latency_ms, 30.0, f"Remember latency too high: {latency_ms:.2f}ms")
+        self.assertLess(latency_ms, 30.0 * LATENCY_SCALE, f"Remember latency too high: {latency_ms:.2f}ms")
 
         idx = palace_mod.load_index(self.test_dir)
         self.assertIn(mem_id, idx["memories"])
@@ -126,7 +128,7 @@ class TestMemoryPalace(unittest.TestCase):
 
         self.assertGreaterEqual(len(results), 1, "Should recall deployment procedure")
         self.assertEqual(results[0]["title"], "Production Deployment Checklist")
-        self.assertLess(latency_ms, 25.0, f"Recall latency too high: {latency_ms:.2f}ms")
+        self.assertLess(latency_ms, 25.0 * LATENCY_SCALE, f"Recall latency too high: {latency_ms:.2f}ms")
 
         # Recall with room filter
         dec_results = palace_mod.recall(self.test_dir, "cache", room="decisions", auto_mode=True)
@@ -182,8 +184,8 @@ class TestMemoryPalace(unittest.TestCase):
         p95 = latencies[int(len(latencies) * 0.95)]
         p99 = latencies[-1]
 
-        self.assertLess(p50, 15.0, f"P50 latency exceeded 15ms: {p50:.2f}ms")
-        self.assertLess(p95, 30.0, f"P95 latency exceeded 30ms: {p95:.2f}ms")
+        self.assertLess(p50, 15.0 * LATENCY_SCALE, f"P50 latency exceeded 15ms: {p50:.2f}ms")
+        self.assertLess(p95, 30.0 * LATENCY_SCALE, f"P95 latency exceeded 30ms: {p95:.2f}ms")
 
 if __name__ == "__main__":
     unittest.main()

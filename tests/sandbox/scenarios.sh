@@ -1053,7 +1053,8 @@ scenario_edge_cases() {
     export CORTEX_PROFILES_DIR="${SANDBOX_DIR}/edge3"
     CC profile add solo >/dev/null 2>&1
     CC switch solo >/dev/null 2>&1
-    CC profile remove solo </dev/null >/dev/null 2>&1
+    # --yes: without a terminal, removal now demands explicit consent.
+    CC profile remove solo --yes </dev/null >/dev/null 2>&1
     local active
     active=$(cat "${CORTEX_PROFILES_DIR}/current_profile" 2>/dev/null)
     if [ -z "$active" ]; then

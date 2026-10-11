@@ -37,6 +37,28 @@ def _looks_disposable(path: str) -> bool:
     return os.path.commonpath([real, temp]) == temp if real and temp else False
 
 
+def _latency_scale() -> float:
+    """Multiplier applied to every millisecond budget in the suite.
+
+    The budgets were written against Linux containers. Spawning a Python process
+    and doing fsync'd file work is several times slower on Windows (process
+    creation, antivirus scanning), so the same code measures 5-10x higher there
+    without being any slower relative to its platform. Scale instead of deleting
+    the checks: they still catch a hook that becomes genuinely heavy. Override
+    with CORTEX_TEST_LATENCY_SCALE (e.g. 1 for strict, 10 for a loaded CI box).
+    """
+    raw = os.environ.get("CORTEX_TEST_LATENCY_SCALE")
+    if raw:
+        try:
+            return max(0.1, float(raw))
+        except ValueError:
+            pass
+    return 6.0 if os.name == "nt" else 1.0
+
+
+LATENCY_SCALE = _latency_scale()
+
+
 def is_sandboxed() -> bool:
     if os.environ.get("CORTEX_SANDBOX") == "1":
         return True

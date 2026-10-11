@@ -1,168 +1,120 @@
 #!/usr/bin/env python3
 """
-Test Suite: Multi-Account Capacity & Rate-Limit Engine
-Validates:
-1. Utilization parsing for 5-hour and 7-day rolling windows
-2. Reset countdown calculation & ISO/epoch parsing
-3. Account ranking & scoring formula (available < blocked < unauthenticated)
-4. Automatic failover selection of healthiest account
-5. Visual progress bar rendering & ANSI color thresholds
-6. Execution speed / latency benchmarks (< 15ms target)
+Test Suite: capacity reporting through the standalone delegator.
+
+scripts/claude-capacity-check.py used to be a second, independent implementation
+that reported a profile with no recorded usage as "Ready (100% capacity free)" and
+ranked it best, so failover could switch to an exhausted account. It now forwards
+to the core (cortex/capacity.py). These tests pin the property that mattered:
+**missing data is never reported - or chosen - as free capacity.**
+
+Parsing of the usage shapes themselves is covered in test_core_fixes.py.
 """
 
-import os
-import sys
-
-# Prevent bytecode caching
-sys.dont_write_bytecode = True
-
-import time
+import importlib.util
+import io
 import json
+import os
 import shutil
+import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone, timedelta
+from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
+from unittest import mock
+
+sys.dont_write_bytecode = True
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(PROJECT_DIR, "scripts"))
+sys.path.insert(0, PROJECT_DIR)
 
-import importlib
-capacity_mod = importlib.import_module("claude-capacity-check")
+from cortex import jsonfile, profiles  # noqa: E402
 
-class TestCapacityEngine(unittest.TestCase):
+
+def _load_delegator():
+    path = os.path.join(PROJECT_DIR, "scripts", "claude-capacity-check.py")
+    spec = importlib.util.spec_from_file_location("claude_capacity_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestCapacityDelegator(unittest.TestCase):
 
     def setUp(self):
-        """Create mock profiles directory for testing."""
-        self.test_dir = tempfile.mkdtemp(prefix="cortex_test_capacity_")
-        self.orig_profiles_dir = capacity_mod.PROFILES_DIR
-        capacity_mod.PROFILES_DIR = self.test_dir
+        self.home = tempfile.mkdtemp(prefix="cortex_test_capacity_")
+        self.env = mock.patch.dict(os.environ, {
+            "HOME": self.home, "USERPROFILE": self.home,
+            "CORTEX_PROFILES_DIR": os.path.join(self.home, "profiles"),
+        })
+        self.env.start()
+        profiles._AUTH_CACHE.clear()
+        # Every profile counts as signed in; auth itself is tested elsewhere.
+        self.auth = mock.patch.object(profiles, "is_authenticated", return_value=True)
+        self.auth.start()
+        self.cli = _load_delegator()
 
     def tearDown(self):
-        """Restore original profiles directory and cleanup temp."""
-        capacity_mod.PROFILES_DIR = self.orig_profiles_dir
-        if os.path.exists(self.test_dir):
-            shutil.rmtree(self.test_dir, ignore_errors=True)
+        self.auth.stop()
+        self.env.stop()
+        shutil.rmtree(self.home, ignore_errors=True)
 
-    def create_mock_profile(self, name, email, sub_type="pro", five_hour_util=0, seven_day_util=0, blocked=False, reset_in_seconds=3600):
-        """Creates a mock profile directory with credentials and cached usage data."""
-        p_dir = os.path.join(self.test_dir, name)
-        os.makedirs(p_dir, exist_ok=True)
+    def _profile(self, name, five_hour=None):
+        target = profiles.ensure_structure(name, "isolated")
+        cfg = {"oauthAccount": {"emailAddress": f"{name}@example.com"}}
+        if five_hour is not None:
+            reset = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+            cfg["cachedUsageUtilization"] = {"utilization": {
+                "five_hour": {"utilization": five_hour, "resets_at": reset}}}
+        jsonfile.write(os.path.join(target, ".claude.json"), cfg)
 
-        # .credentials.json
-        creds = {
-            "claudeAiOauth": {
-                "accessToken": "mock_token_" + name,
-                "subscriptionType": sub_type,
-                "rateLimitTier": "default"
-            }
-        }
-        with open(os.path.join(p_dir, ".credentials.json"), "w") as f:
-            json.dump(creds, f)
+    def _run(self, *argv):
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["claude-capacity-check.py", *argv]), \
+                redirect_stdout(out):
+            code = self.cli.main()
+        return code, out.getvalue()
 
-        # .claude.json
-        now = datetime.now(timezone.utc)
-        reset_time_iso = (now + timedelta(seconds=reset_in_seconds)).isoformat()
+    def test_no_usage_data_is_never_reported_as_free(self):
+        """The original bug: no data -> 'Ready (100% capacity free)'."""
+        self._profile("fresh")
+        code, out = self._run("--json")
+        record = json.loads(out)[0]
+        self.assertEqual(record["state"], "unknown")
+        self.assertNotIn("100%", record["detail"])
 
-        claude_data = {
-            "oauthAccount": {"emailAddress": email},
-            "cachedUsageUtilization": {
-                "utilization": {
-                    "five_hour": {
-                        "utilization": five_hour_util,
-                        "resets_at": reset_time_iso if five_hour_util >= 100 else None
-                    },
-                    "seven_day": {
-                        "utilization": seven_day_util,
-                        "resets_at": reset_time_iso if seven_day_util >= 100 else None
-                    },
-                    "limits": [
-                        {
-                            "kind": "weekly_all" if blocked else "session",
-                            "percent": 100 if blocked else 0,
-                            "severity": "critical" if blocked else "normal",
-                            "resets_at": reset_time_iso if blocked else None,
-                            "is_active": blocked
-                        }
-                    ]
-                }
-            }
-        }
-        with open(os.path.join(p_dir, ".claude.json"), "w") as f:
-            json.dump(claude_data, f)
+    def test_best_refuses_to_guess_when_nothing_is_known(self):
+        self._profile("fresh")
+        code, out = self._run("--best")
+        self.assertEqual(code, 1)
+        self.assertEqual(out.strip(), "")
 
-    def test_healthy_account_detection(self):
-        """Healthy account with 0% utilization must be reported available with score 0."""
-        self.create_mock_profile("alpha", "alpha@example.com", five_hour_util=0, seven_day_util=0)
-        t0 = time.perf_counter()
-        info = capacity_mod.check_profile("alpha")
-        latency_ms = (time.perf_counter() - t0) * 1000.0
+    def test_best_picks_the_profile_with_evidence_of_capacity(self):
+        self._profile("fresh")                 # unknown: must not win by default
+        self._profile("busy", five_hour=70)
+        self._profile("quiet", five_hour=5)
+        code, out = self._run("--best")
+        self.assertEqual((code, out.strip()), (0, "quiet"))
 
-        self.assertTrue(info["available"])
-        self.assertEqual(info["score"], 0)
-        self.assertEqual(info["five_hour_util"], 0)
-        self.assertEqual(info["seven_day_util"], 0)
-        self.assertLess(latency_ms, 15.0, f"check_profile took too long: {latency_ms:.2f}ms")
+    def test_a_limited_profile_is_never_best(self):
+        self._profile("capped", five_hour=100)
+        code, _ = self._run("--best")
+        self.assertEqual(code, 1)
 
-    def test_rate_limited_account_detection(self):
-        """Account with 100% utilization must be marked unavailable with countdown calculated."""
-        self.create_mock_profile("beta", "beta@example.com", five_hour_util=0, seven_day_util=100, blocked=True, reset_in_seconds=7200)
-        info = capacity_mod.check_profile("beta")
+    def test_table_explains_unknown_instead_of_hiding_it(self):
+        self._profile("fresh")
+        _, out = self._run()
+        self.assertIn("unknown", out)
+        self.assertIn("not auto-selected", out)
 
-        self.assertFalse(info["available"])
-        self.assertEqual(info["seven_day_util"], 100)
-        self.assertGreater(info["score"], 100000, "Blocked account score must be >= 100000")
-        self.assertIsNotNone(info["reset_seconds"])
-        self.assertIn("resets in", info["status_detail"])
+    def test_switch_validates_the_profile_name(self):
+        self._profile("real")
+        code, _ = self._run("--switch", "ghost")
+        self.assertEqual(code, 1)
+        code, out = self._run("--switch", "real")
+        self.assertEqual(code, 0)
+        self.assertEqual(profiles.active_profile(), "real")
 
-    def test_best_account_selection_logic(self):
-        """Engine must automatically rank available account above rate-limited account."""
-        # Profile 1: Blocked
-        self.create_mock_profile("p1_blocked", "p1@example.com", seven_day_util=100, blocked=True, reset_in_seconds=3600)
-        # Profile 2: 30% utilized
-        self.create_mock_profile("p2_busy", "p2@example.com", five_hour_util=30, seven_day_util=30)
-        # Profile 3: 0% utilized (optimal)
-        self.create_mock_profile("p3_free", "p3@example.com", five_hour_util=0, seven_day_util=0)
-
-        profs = ["p1_blocked", "p2_busy", "p3_free"]
-        results = [capacity_mod.check_profile(p) for p in profs]
-        sorted_res = sorted(results, key=lambda x: x["score"])
-
-        self.assertEqual(sorted_res[0]["name"], "p3_free", "P3 with 0% utilization must rank 1st")
-        self.assertEqual(sorted_res[1]["name"], "p2_busy", "P2 with 30% utilization must rank 2nd")
-        self.assertEqual(sorted_res[2]["name"], "p1_blocked", "P1 (blocked) must rank last")
-
-    def test_render_bar_visual_formatting(self):
-        """render_bar must render exact block characters and color thresholds."""
-        # 0% utilization -> Green
-        bar_0 = capacity_mod.render_bar(0, width=10, use_color=True)
-        self.assertIn("░░░░░░░░░░", bar_0)
-        self.assertIn("\033[1;32m", bar_0)  # Green
-
-        # 60% utilization -> Yellow
-        bar_60 = capacity_mod.render_bar(60, width=10, use_color=True)
-        self.assertIn("██████░░░░", bar_60)
-        self.assertIn("\033[1;33m", bar_60)  # Yellow
-
-        # 100% utilization -> Red
-        bar_100 = capacity_mod.render_bar(100, width=10, use_color=True)
-        self.assertIn("██████████", bar_100)
-        self.assertIn("\033[1;31m", bar_100)  # Red
-
-        # Colorless fallback
-        bar_no_color = capacity_mod.render_bar(50, width=10, use_color=False)
-        self.assertEqual(bar_no_color, "[█████░░░░░]  50%")
-
-    def test_capacity_check_speed_benchmark(self):
-        """Multi-account check across 5 simulated accounts must execute in < 25ms."""
-        for i in range(5):
-            self.create_mock_profile(f"user_{i}", f"user_{i}@test.com", five_hour_util=i*10)
-
-        t0 = time.perf_counter()
-        results = [capacity_mod.check_profile(f"user_{i}") for i in range(5)]
-        total_time_ms = (time.perf_counter() - t0) * 1000.0
-
-        self.assertEqual(len(results), 5)
-        self.assertLess(total_time_ms, 25.0, f"Total multi-account check took too long: {total_time_ms:.2f}ms")
 
 if __name__ == "__main__":
     unittest.main()

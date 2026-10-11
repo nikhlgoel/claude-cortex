@@ -21,6 +21,8 @@ import json
 import time
 import subprocess
 import unittest
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _guard import LATENCY_SCALE  # noqa: E402
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PRETOOL_HOOK = os.path.join(PROJECT_DIR, "scripts", "cortex-pretool-hook.py")
@@ -63,7 +65,7 @@ class TestTokenConservation(unittest.TestCase):
         code, stdout, stderr, latency_ms = self.run_hook(PRETOOL_HOOK, payload)
         self.assertEqual(code, 2, "Expected exit code 2 (blocked)")
         self.assertIn("Blocked 'cat package-lock.json'", stderr)
-        self.assertLess(latency_ms, 150.0, f"Hook execution too slow: {latency_ms:.2f}ms")
+        self.assertLess(latency_ms, 150.0 * LATENCY_SCALE, f"Hook execution too slow: {latency_ms:.2f}ms")
 
     def test_pretool_blocks_unpaged_git_log(self):
         """PreTool Hook must block unpaged 'git log' with exit code 2."""
@@ -74,7 +76,7 @@ class TestTokenConservation(unittest.TestCase):
         code, stdout, stderr, latency_ms = self.run_hook(PRETOOL_HOOK, payload)
         self.assertEqual(code, 2, "Expected exit code 2 (blocked)")
         self.assertIn("Unpaged 'git log'", stderr)
-        self.assertLess(latency_ms, 150.0, f"Hook execution too slow: {latency_ms:.2f}ms")
+        self.assertLess(latency_ms, 150.0 * LATENCY_SCALE, f"Hook execution too slow: {latency_ms:.2f}ms")
 
     def test_pretool_blocks_unbounded_tree(self):
         """PreTool Hook must block unbounded 'tree' with exit code 2."""
@@ -85,7 +87,7 @@ class TestTokenConservation(unittest.TestCase):
         code, stdout, stderr, latency_ms = self.run_hook(PRETOOL_HOOK, payload)
         self.assertEqual(code, 2, "Expected exit code 2 (blocked)")
         self.assertIn("Unbounded 'tree'", stderr)
-        self.assertLess(latency_ms, 150.0)
+        self.assertLess(latency_ms, 150.0 * LATENCY_SCALE)
 
     def test_pretool_allows_safe_git_log_and_tree(self):
         """PreTool Hook must allow bounded commands with exit code 0."""
@@ -98,14 +100,16 @@ class TestTokenConservation(unittest.TestCase):
         for p in payloads:
             code, stdout, stderr, latency_ms = self.run_hook(PRETOOL_HOOK, p)
             self.assertEqual(code, 0, f"Expected exit code 0 for safe command: {p['tool_input']['command']}")
-            self.assertLess(latency_ms, 150.0)
+            self.assertLess(latency_ms, 150.0 * LATENCY_SCALE)
 
     def test_prompt_hook_intercepts_explicit_prefix(self):
         """Only the explicit /cc and !cc prefixes are intercepted."""
-        for cmd in ["/cc capacity", "/cc model", "!cc palace", "/cc"]:
+        # Offline commands only: `/cc model` fetches a live catalog over the
+        # network, which made a test about prefix handling depend on the internet.
+        for cmd in ["/cc capacity", "/cc version", "!cc palace", "/cc"]:
             code, stdout, stderr, latency_ms = self.run_hook(PROMPT_HOOK, {"prompt": cmd})
             self.assertEqual(code, 2, f"Expected interception for: {cmd}")
-            self.assertLess(latency_ms, 300.0)
+            self.assertLess(latency_ms, 300.0 * LATENCY_SCALE)
 
     def test_prompt_hook_never_erases_ordinary_prompts(self):
         """Ordinary prompts must reach the model.
@@ -136,7 +140,7 @@ class TestTokenConservation(unittest.TestCase):
             {"prompt": "Refactor the database connection pool in dnet-engine"}
         )
         self.assertEqual(code, 0, "Normal prompt should pass with exit code 0")
-        self.assertLess(latency_ms, 150.0)
+        self.assertLess(latency_ms, 150.0 * LATENCY_SCALE)
 
     def test_precompact_hook_directives(self):
         """PreCompact Hook must emit critical context preservation directives on stdout."""
@@ -145,7 +149,7 @@ class TestTokenConservation(unittest.TestCase):
         self.assertIn("CRITICAL PRE-COMPACTION PRESERVATION DIRECTIVES", stdout)
         self.assertIn("Architectural Decision Records", stdout)
         self.assertIn("Workshop", stdout)
-        self.assertLess(latency_ms, 150.0)
+        self.assertLess(latency_ms, 150.0 * LATENCY_SCALE)
 
     def test_calculate_session_token_savings(self):
         """Computes total simulated token conservation over a 50-turn complex coding session."""
