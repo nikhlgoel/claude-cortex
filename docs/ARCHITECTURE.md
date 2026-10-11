@@ -57,13 +57,16 @@ The shims locate the core and hand over. They contain no logic worth testing.
 | `mcp.py` | Register the MCP server per profile (auth untouched) |
 | `integrity.py` | Manifest generate/verify; runnable standalone |
 | `tools.py` | Dispatch to standalone tools (checkout wins over installed) |
-| `jsonfile.py` | Atomic, backed-up JSON writes; `write_text` for small files |
+| `jsonfile.py` | Atomic, backed-up JSON writes; `write_text` for small files; locked read-modify-write (`update`, `merge`, `file_lock`) with stale-lock recovery, so two terminals cannot lose each other's edits |
 
 Standalone tools under `scripts/` (invoked via `tools.py` or the MCP server):
 `claude-palace.py` (memory), `claude-analyze.py` (source risk analysis),
 `dream-doc.py` (the dream exploration archive — save/list/show, slugged and
 indexed), `instinct-cli.py` (learned patterns), `claude-research.py` (arXiv),
-`cortex-mcp.py` (the MCP server), plus the lifecycle hooks.
+`cortex-mcp.py` (the MCP server), `cortex-scorer.py` (`evaluate_impact`: a heuristic
+risk score for a change to one file - complexity vs. git HEAD, test references,
+recoverability, dependents - that lists what it could not measure rather than
+guessing), plus the lifecycle hooks.
 
 ### Two things named "dream", kept distinct
 
@@ -168,7 +171,7 @@ being complete is worth more than one that does.
 - **Analyze binaries** with no network route out: decompile to C and produce a
   capability report from imports (`cc ghidra` — verified against known binaries)
 - **Static risk analysis of source** with file/line/mechanism findings
-  (`cc dream` — real AST + shell analysis; found real bugs in its own codebase)
+  (`cc analyze` — real AST + shell analysis; found real bugs in its own codebase)
 - **Give Claude these as tools** via MCP (`cc mcp add`), callable mid-session
 
 ## 5. What it cannot do
@@ -180,7 +183,7 @@ into a real analyzer and `think` was removed rather than left pretending.)
 | Limitation | Detail |
 | :--- | :--- |
 | **`cc status` is not a usage API** | Reads Claude Code's local cache. No cache → unknown (never guessed). |
-| **`cc dream` is not a full linter** | Real, but pattern/AST-based: it finds the failure classes it knows (swallowed errors, non-atomic writes, missing timeouts, injection), not everything. |
+| **`cc analyze` is not a full linter** | Real, but pattern/AST-based: it finds the failure classes it knows (swallowed errors, non-atomic writes, missing timeouts, injection), not everything. |
 | **Ghidra loses inlined functions** | A `static` the compiler inlined has no boundary in the output; type inference near varargs can be confidently wrong. |
 | **Ghidra audit is not a proof** | Pattern matching misses obfuscation and reflection. The C++ decompiler is not source-audited. |
 | **Antigravity is not CI-tested** | Windows-only app. Config generated and statically validated; verify by launching. |

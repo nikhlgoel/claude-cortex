@@ -219,13 +219,25 @@ old one left behind.
 | `cc docs`, `cc palace` etc. started a real session | Legacy subcommands fell through to the launcher and became the prompt | Commands dispatch to tools; unknown commands are refused, not forwarded |
 | Windows installers produced a broken install | `install.ps1` and `install.py` never copied the core | All three installers deploy it; covered by a test |
 | Two capacity implementations disagreed | The standalone script still called unknown capacity "100% free" | It now delegates to the core |
+| Capacity said "unreadable" for every profile with real data | The core parsed flat key names; Claude Code records `utilization.five_hour` / `seven_day` / `limits[]` | Parses the real shape; an already-reset window is "unknown", never "free" |
+| `cc -r` broke resuming a session | `-r` was rewritten into an effort flag, but it is Claude Code's own `--resume` | Left alone; use `-e` / `--reasoning` for effort |
+| Ctrl+C could end a Claude session on Windows | The parent Python process received the console Ctrl+C and killed its child | Parent ignores SIGINT while the child runs |
+| Removing a synced profile could reach shared data | Synced profiles link `projects`, `skills`... into `~/.claude`; a delete can follow a link or junction | Links are detached first; removal refuses if one cannot be; Windows uses junctions (no privilege needed) |
+| `cc profile remove` deleted credentials silently in scripts | Confirmation was skipped whenever stdin was not a terminal | `--yes` is required without a person present; EOF at a prompt no longer crashes |
+| Two terminals could lose each other's `.claude.json` edits | Atomic write, but an unlocked read-modify-write | Locked update with stale-lock recovery |
+| One bad byte in `providers.json` destroyed every API key | A parse failure returned defaults, and the next save overwrote the file | The unreadable original is kept beside it; writes are atomic; Windows gets a real owner-only ACL |
+| `install.py` could wipe a Claude Desktop config | "Could not parse" was treated as "empty", then written back | An unparseable config is left untouched; a `.bak` is kept otherwise |
+| Pre-tool guard blocked `git ls-tree` / `cargo tree`, and ignored PowerShell | `\btree\b` matched anywhere; the hook matcher was `Bash` only | Matches the command word; matcher is `Bash\|PowerShell` |
+| `/cc login` inside a session hung the prompt hook | Session-launching commands ran with captured output | Only commands that finish by themselves are run; others say "use a terminal" |
+| Test report claimed passes that were not measured | `run_all_tests.py` printed fixed latencies and token savings | Reports only what the run measured |
 
 ## Known limitations
 
-- `cc dream` and `cc think` print fixed checklists. They do no analysis.
-  (`cc research` and `cc palace`, by contrast, are real - arXiv retrieval and
-  tag-indexed storage respectively.)
-- `cc model` pricing is a static snapshot.
+- `dream` is in-session only (`/dream <concept>`); `think` was removed. The
+  terminal analyzer is `cc analyze`, which is real but pattern-based.
+- `evaluate_impact` is a heuristic risk score, not proof; it lists what it could
+  not measure.
+- `cc model` is live (OpenRouter), cached six hours. Claude models show no price.
 - `cc status` reads Claude Code's local cache, not a usage API.
 - Antigravity integration is generated and statically validated, not CI-tested.
 

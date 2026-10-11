@@ -60,6 +60,7 @@ installation.
 cc                          # launch the active profile
 cc -work                    # launch a specific profile
 cc profile add work         # create a profile
+cc profile remove work      # delete it (asks first; scripts must pass --yes)
 cc login work               # sign in
 cc switch work              # change the active profile
 cc status                   # account capacity
@@ -68,6 +69,9 @@ cc doctor                   # diagnose problems
 cc doctor --repair          # fix the unambiguous ones
 
 cc -s | -o | -H             # Sonnet 5 | Opus 5 | Haiku 4.5
+cc --opus-5-5               # Opus 5.5   (also -o55)
+cc --sonnet-5-5             # Sonnet 5.5
+cc --fable                  # Fable 5.1  (--fable-5 for the previous one)
 cc -e high                  # reasoning effort: low medium high xhigh max
 cc -t                       # turbo: Haiku at low effort
 cc -y                       # skip permission prompts
@@ -78,9 +82,11 @@ Tools:
 
 ```bash
 cc palace | remember | recall    # memory palace (stores and retrieves)
-cc model | provider | update     # model catalog, API providers, updates
+cc model | provider | update     # live model catalog, API providers, updates
 cc research <topic>              # live arXiv retrieval (real)
-cc dream | think                 # review scaffolds - see limitations below
+cc analyze <path>                # static risk analysis of source (file, line, mechanism)
+cc mcp add                       # expose Cortex's tools to Claude (incl. evaluate_impact)
+/dream <concept>                 # in a session: research-backed concept explorer
 ```
 
 An unrecognized command is refused with a suggestion rather than being sent to
@@ -156,6 +162,18 @@ make sandbox-all      # every scenario on every image
 make sandbox-list     # available scenarios
 ```
 
+The Python unit and integration suite (`tests/`) can also run directly. It
+refuses to start unless it is sandboxed, because some tests exercise paths under
+`~/.claude`; point `HOME` at a throwaway directory:
+
+```bash
+CORTEX_SANDBOX=1 HOME="$(mktemp -d)" python tests/run_all_tests.py
+```
+
+The report it writes lists only what was measured: tests run, failures with their
+reasons, and duration. Millisecond budgets are scaled up on Windows (override with
+`CORTEX_TEST_LATENCY_SCALE`), since process creation there is several times slower.
+
 Windows parity is executed, not assumed: the PowerShell shim runs under `pwsh`
 and is asserted to resolve a config directory byte-identical to bash. That is
 the property the credential-namespace bug turned on.
@@ -165,23 +183,30 @@ not declare. See [tests/sandbox/README.md](tests/sandbox/README.md).
 
 ## Honest limitations
 
-- **`cc dream` and `cc think` do not analyze anything.** They print fixed
-  checklists for Claude to reason against. `dream`'s output is identical
-  regardless of topic; `think`'s varies only by the echoed prompt. They are
-  scaffolds, not engines.
+- **`dream` is not a terminal command.** Exploring a concept needs a model, so it
+  lives in a session (`/dream <concept>`); the terminal refuses it and says so.
+  `think` was removed rather than left pretending to analyze. The terminal-side
+  code analyzer is `cc analyze`, which is real but pattern/AST-based: it finds the
+  failure classes it knows, not everything.
+- **`evaluate_impact` is a heuristic, not a verdict.** It scores one file from
+  measurable signals (complexity change vs. git HEAD, whether tests reference it,
+  whether a committed copy exists, destructive patterns, dependents). It reports
+  what it could not measure instead of guessing, and does not replace running tests.
+
 ### What is real, audited rather than assumed
 
 | Feature | Verdict |
 | :--- | :--- |
 | `cc research` | **Real** - queries the arXiv API, returns actual papers |
 | `cc palace` / `remember` / `recall` | **Real** - stores, tag-indexes, retrieves |
-| `cc provider` | **Real** - keys stored 0600, masked in output |
-| Cortex gateway | **Real** - serves HTTP, binds loopback only |
-| `cc dream` | Scaffold - identical output for every topic |
-| `cc think` | Scaffold - varies only by the echoed prompt |
-| `cc model` pricing | Static snapshot, not a live feed |
-- **Model pricing in `cc model` is a static snapshot**, not a live feed. Confirm
-  against the provider before relying on it.
+| `cc provider` | **Real** - key file is owner-only (0600; ACL-restricted on Windows), masked in output |
+| Cortex gateway | **Real** - serves HTTP, binds loopback only, retries transient upstream errors |
+| `cc analyze` | **Real** - AST + shell analysis; limited to the failure classes it knows |
+| `cc model` | **Real** - live OpenRouter catalog with real pricing; cached, labelled when stale |
+| `evaluate_impact` | Heuristic risk score; unmeasurable inputs are listed, never invented |
+- **Claude's own models carry no per-token price in `cc model`.** On a subscription
+  there isn't one that means anything; OpenRouter models show real $/1M-token
+  prices, cached for six hours.
 - **`cc status` reports what Claude Code has cached locally.** It does not query
   a usage API. Profiles with no recorded usage show *unknown*, and `cc continue`
   will not auto-select them - missing data is not evidence of free capacity.
