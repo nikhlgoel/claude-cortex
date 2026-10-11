@@ -33,7 +33,7 @@ Claude Cortex (cc) - multi-account Claude Code launcher
 Profiles
   cc profile list                 Show profiles and auth state
   cc profile add [name]           Create a profile
-  cc profile remove <name>        Delete a profile
+  cc profile remove <name> [--yes]  Delete a profile (--yes required in scripts)
   cc login [name]                 Sign in to a profile
   cc switch [name]                Set the active profile
   cc status | cc quota            Account capacity
@@ -41,6 +41,7 @@ Profiles
 Session
   cc continue [name]              Resume the last conversation
   cc -s | -o | -H                 Sonnet 5 | Opus 5 | Haiku 4.5
+  cc --opus-5-5 | --sonnet-5-5 | --fable   Opus 5.5 | Sonnet 5.5 | Fable 5.1
   cc -e <low|medium|high|xhigh|max>   Reasoning effort
   cc -t                           Turbo (Haiku, low effort)
   cc -y                           Skip permission prompts
@@ -69,6 +70,21 @@ Prompts
 """
 
 
+def _ask(prompt):
+    """Read one answer, or return None when none can be read.
+
+    ``sys.stdin.isatty()`` is not a dependable "a person is here": on Windows it
+    is True for the NUL device, so ``cc profile add x < NUL`` took the
+    interactive path and died with an EOFError traceback at ``input()``. Callers
+    treat None as "declined", which is the safe reading for every prompt here.
+    """
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+
 def cmd_profile(args):
     action = args[0] if args else "list"
     rest = args[1:]
@@ -80,7 +96,7 @@ def cmd_profile(args):
     if action in ("add", "new", "create"):
         raw = rest[0] if rest else ""
         if not raw and sys.stdin.isatty():
-            raw = input("New profile name: ")
+            raw = _ask("New profile name: ") or ""
         name = profiles.normalize_name(raw)
 
         if not name:
@@ -120,20 +136,34 @@ def cmd_profile(args):
         print(f"Created profile '{name}' ({mode}).")
 
         if sys.stdin.isatty():
-            answer = input(f"Sign in to '{name}' now? [Y/n]: ").strip().lower()
-            if answer in ("", "y", "yes"):
+            answer = _ask(f"Sign in to '{name}' now? [Y/n]: ")
+            # No answer at all (None) is a decline, not the default "yes": opening
+            # a browser login nobody asked for is the worse mistake.
+            if answer is not None and answer.lower() in ("", "y", "yes"):
                 return profiles.login(name)
         print(f"Run 'cc login {name}' when you are ready to sign in.")
         return 0
 
     if action in ("remove", "rm", "delete"):
-        name = rest[0] if rest else ""
+        name = next((a for a in rest if not a.startswith("-")), "")
         if not name:
-            print("Usage: cc profile remove <name>", file=sys.stderr)
+            print("Usage: cc profile remove <name> [--yes]", file=sys.stderr)
             return 2
-        if sys.stdin.isatty():
-            confirm = input(f"Remove profile '{name}' and its credentials? [y/N]: ")
-            if confirm.strip().lower() not in ("y", "yes"):
+        # Deleting a profile deletes its saved sign-in. Never do that silently:
+        # ask when a person is present, and demand --yes when nobody is (a script
+        # or a hook), where an accidental call would otherwise just succeed.
+        if "--yes" not in rest and "-y" not in rest:
+            if not sys.stdin.isatty():
+                print(f"Refusing to remove '{name}' without confirmation. "
+                      f"Re-run with --yes to delete it and its credentials.",
+                      file=sys.stderr)
+                return 2
+            confirm = _ask(f"Remove profile '{name}' and its credentials? [y/N]: ")
+            if confirm is None:
+                print("No confirmation received; nothing was removed. "
+                      "Re-run with --yes to skip the prompt.", file=sys.stderr)
+                return 2
+            if confirm.lower() not in ("y", "yes"):
                 print("Aborted.")
                 return 0
         return profiles.remove(name)
@@ -307,7 +337,7 @@ def main(argv=None):
             # in and spent a session start. Refuse here instead.
             if len(head) > 2 and head not in launcher.MODEL_ALIASES \
                     and head not in launcher.EFFORT_FLAGS \
-                    and head not in ("-t", "-y", "-e", "-r", "-s", "-o", "-H"):
+                    and head not in ("-t", "-y", "-e", "-s", "-o", "-H"):
                 available = ", ".join(profiles.list_profiles()) or "(none)"
                 print(f"cc: no profile named '{candidate}'.", file=sys.stderr)
                 print(f"    Available profiles: {available}", file=sys.stderr)

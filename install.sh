@@ -16,6 +16,13 @@
 
 set -euo pipefail
 
+# `set -u` catches an unset HOME but not an empty one, which would turn every
+# "${HOME}/.claude..." path below into "/.claude..." right before an rm -rf.
+if [ -z "${HOME:-}" ] || [ ! -d "${HOME}" ]; then
+    echo "error: HOME is not set to an existing directory; refusing to continue." >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARED_DIR="${HOME}/.claude"
 BIN_DIR="${HOME}/.local/bin"

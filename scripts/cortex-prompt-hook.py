@@ -73,6 +73,28 @@ def extract_prompt_text(data):
     return ""
 
 
+# Commands that print and finish by themselves. Anything else is refused here:
+# `login`, `continue`, `--`, `-work`, or a bare profile name would start an
+# interactive session or a browser login whose output this hook captures, and
+# the hook would then sit waiting on it until the timeout. Those belong in a
+# terminal.
+NON_INTERACTIVE = frozenset({
+    "status", "quota", "capacity", "limits", "switch", "profile", "profiles",
+    "doctor", "ide", "integrity", "model", "models", "version", "help", "--help",
+    "palace", "remember", "recall", "research", "analyze", "dream-doc", "mcp",
+})
+
+
+def route(args):
+    """Return ``(args, None)`` to run, or ``(None, message)`` to refuse."""
+    if not args or args[0].lower() not in NON_INTERACTIVE:
+        shown = args[0] if args else ""
+        return None, (f"cc: '{shown}' starts an interactive session or login, "
+                      f"which cannot run inside a prompt hook.\n"
+                      f"    Run it in a terminal:  cc {' '.join(args)}".rstrip())
+    return args, None
+
+
 def run_cortex(args):
     """Run a Cortex command and return its combined output."""
     command, base = cortex_command()
@@ -80,9 +102,15 @@ def run_cortex(args):
         return "Cortex core not found. Reinstall Cortex."
     env = dict(os.environ)
     env["PYTHONPATH"] = base
+    # The command's output is decoded here, so pin both ends to UTF-8. With the
+    # Windows default code page, one non-ASCII character in the output would
+    # raise and the hook would fail open - handing the "/cc ..." text to the
+    # model as an ordinary prompt and spending tokens on it.
+    env["PYTHONUTF8"] = "1"
     try:
         result = subprocess.run(command + args, capture_output=True, text=True,
-                                timeout=120, env=env)
+                                encoding="utf-8", errors="replace",
+                                stdin=subprocess.DEVNULL, timeout=120, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return f"cc: {exc}"
     return (result.stdout or "") + (result.stderr or "")
@@ -109,17 +137,18 @@ def main():
     head = tokens[0].lower()
 
     # Only an explicit prefix is a command.
+    args = None
     if head in ("/cc", "!cc"):
         args = tokens[1:] if len(tokens) > 1 else ["--help"]
-        output = run_cortex(args)
-        # Exit 2 blocks the model and shows stderr to the user, at no token cost.
-        print(output.strip(), file=sys.stderr)
-        return 2
-
-    if head.startswith("/cc:"):
+    elif head.startswith("/cc:"):
         # "/cc:status" form
         args = [head.split(":", 1)[1]] + tokens[1:]
-        print(run_cortex(args).strip(), file=sys.stderr)
+
+    if args is not None:
+        runnable, refusal = route(args)
+        output = refusal if refusal else run_cortex(runnable)
+        # Exit 2 blocks the model and shows stderr to the user, at no token cost.
+        print(output.strip(), file=sys.stderr)
         return 2
 
     # Anything else is a real prompt. Do not touch it.

@@ -28,6 +28,47 @@ import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
+#: Upstream statuses that mean "try again", not "your request is wrong".
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 529})
+RETRY_ATTEMPTS = 3
+RETRY_MAX_WAIT = 20.0
+
+
+def open_with_retry(request, timeout, attempts=RETRY_ATTEMPTS, sleep=time.sleep):
+    """``urlopen`` that retries transient failures while *opening* the connection.
+
+    A single 429/503 from the provider used to abort the whole turn, which
+    Claude Code surfaces as a failed request and a lost response. This retries
+    those, honouring ``Retry-After`` and backing off exponentially.
+
+    It only covers getting the response headers. Once ``urlopen`` returns, the
+    caller streams the body, and a half-forwarded stream cannot be replayed - so
+    nothing here ever retries after bytes have started flowing. A read timeout is
+    deliberately not retried either: waiting out a 300s timeout three times
+    would turn one hung request into a 15-minute hang.
+    """
+    delay = 1.0
+    for attempt in range(1, attempts + 1):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRYABLE_STATUS or attempt == attempts:
+                raise
+            header = exc.headers.get("Retry-After") if exc.headers else None
+            exc.close()
+            try:
+                wait = float(header) if header else delay
+            except ValueError:
+                wait = delay
+        except urllib.error.URLError as exc:
+            # Connection refused/reset is transient; a timeout is not (see above).
+            if not isinstance(exc.reason, ConnectionError) or attempt == attempts:
+                raise
+            wait = delay
+        sleep(min(max(wait, 0.0), RETRY_MAX_WAIT))
+        delay *= 2
+
+
 DEFAULT_PORT = int(os.environ.get("CORTEX_GATEWAY_PORT", os.environ.get("GEMINI_PROXY_PORT", 8088)))
 CONFIG_DIR = os.path.expanduser("~/.claude")
 PROVIDERS_FILE = os.path.join(CONFIG_DIR, "providers.json")
@@ -229,7 +270,7 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
         upstream_req = urllib.request.Request(target_url, data=payload_bytes, headers=headers, method="POST")
 
         try:
-            with urllib.request.urlopen(upstream_req, timeout=300) as resp:
+            with open_with_retry(upstream_req, timeout=300) as resp:
                 self.send_response(resp.status)
                 for key, value in resp.getheaders():
                     if key.lower() not in ("transfer-encoding", "connection"):
@@ -326,7 +367,7 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
             )
 
             try:
-                with urllib.request.urlopen(gemini_req, timeout=300) as resp:
+                with open_with_retry(gemini_req, timeout=300) as resp:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
@@ -427,7 +468,7 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
         upstream_req = urllib.request.Request(target_url, data=payload_bytes, headers=headers, method="POST")
 
         try:
-            with urllib.request.urlopen(upstream_req, timeout=300) as resp:
+            with open_with_retry(upstream_req, timeout=300) as resp:
                 self.send_response(resp.status)
                 for key, value in resp.getheaders():
                     if key.lower() not in ("transfer-encoding", "connection"):

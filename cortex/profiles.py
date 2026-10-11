@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 
 from . import binary, jsonfile
 from .paths import canonical_dir, profile_dir, profiles_dir, shared_claude_dir
@@ -117,14 +119,68 @@ def _link(src: str, dst: str) -> None:
         return
     except (OSError, NotImplementedError, AttributeError):
         pass
+
+    # Windows without the symlink privilege (no Developer Mode, not elevated):
+    # a directory junction needs no privilege and shares a folder just as well.
+    # Without this, "synced" mode quietly produced empty directories on exactly
+    # the machines where it matters most.
+    if os.name == "nt" and os.path.isdir(src):
+        try:
+            import _winapi
+            _winapi.CreateJunction(src, dst)
+            return
+        except (ImportError, AttributeError, OSError):
+            pass
+
     try:
         if os.path.isdir(src):
             os.makedirs(dst, exist_ok=True)
         else:
-            import shutil
             shutil.copy2(src, dst)
     except OSError:
         pass
+
+
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: symlinks *and* junctions
+
+
+def _is_link(path: str) -> bool:
+    """True for a symlink or a Windows junction (os.path.islink misses junctions)."""
+    if os.path.islink(path):
+        return True
+    try:
+        attrs = getattr(os.lstat(path), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attrs & _REPARSE_POINT)
+
+
+def _detach_links(target: str) -> list:
+    """Remove the links at the top of a profile without following them.
+
+    In synced mode ``projects``, ``skills`` and friends are links into the shared
+    ``~/.claude``. ``shutil.rmtree`` is not guaranteed to leave a junction alone
+    on every supported Python, and following one would delete the user's shared
+    data, not just this profile's. Detach the links first, so what ``rmtree`` then
+    deletes is only the profile's own files. Returns any links that survived.
+    """
+    try:
+        entries = os.listdir(target)
+    except OSError:
+        return []
+    survivors = []
+    for entry in entries:
+        path = os.path.join(target, entry)
+        if not _is_link(path):
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            try:
+                os.rmdir(path)   # removes a junction/dir-symlink, never its target
+            except OSError:
+                survivors.append(path)
+    return survivors
 
 
 def ensure_structure(name: str, mode: str = "synced") -> str:
@@ -157,7 +213,6 @@ def ensure_structure(name: str, mode: str = "synced") -> str:
     if not os.path.exists(prof_settings):
         shared_settings = os.path.join(shared_claude_dir(), "settings.json")
         if os.path.exists(shared_settings):
-            import shutil
             shutil.copy2(shared_settings, prof_settings)
 
     return target
@@ -225,20 +280,22 @@ def seed_identity(name: str) -> bool:
         return False
 
     config_path = os.path.join(target, ".claude.json")
-    cfg = jsonfile.read(config_path, {})
-
-    cfg["hasCompletedOnboarding"] = True
     email = status.get("email")
-    if email:
-        account = cfg.get("oauthAccount")
-        if not isinstance(account, dict):
-            account = {}
-        account["emailAddress"] = email
-        cfg["oauthAccount"] = account
-    if status.get("subscriptionType"):
-        cfg["subscriptionType"] = status["subscriptionType"]
 
-    jsonfile.write(config_path, cfg)
+    def apply(cfg):
+        cfg["hasCompletedOnboarding"] = True
+        if email:
+            account = cfg.get("oauthAccount")
+            if not isinstance(account, dict):
+                account = {}
+            account["emailAddress"] = email
+            cfg["oauthAccount"] = account
+        if status.get("subscriptionType"):
+            cfg["subscriptionType"] = status["subscriptionType"]
+
+    # Locked read-modify-write: two terminals logging in at once must not lose
+    # one another's changes to this file.
+    jsonfile.update(config_path, apply, {})
 
     # Cache the email so status listings work without spawning the CLI.
     try:
@@ -267,11 +324,11 @@ def login(name: str) -> int:
 
     exe = binary.find()
     if not exe:
-        print("No working Claude Code binary found.", file=__import__("sys").stderr)
+        print("No working Claude Code binary found.", file=sys.stderr)
         print("    Run 'cc doctor' to see each candidate and why it was rejected.",
-              file=__import__("sys").stderr)
+              file=sys.stderr)
         print("    Or install Claude Code from https://claude.ai/download",
-              file=__import__("sys").stderr)
+              file=sys.stderr)
         return 1
 
     env = dict(os.environ)
@@ -295,7 +352,6 @@ def login(name: str) -> int:
 
 
 def remove(name: str) -> int:
-    import shutil
     name = normalize_name(name)
     target = profile_dir(name)
     if not os.path.isdir(target):
@@ -305,8 +361,26 @@ def remove(name: str) -> int:
         print("Refusing to remove the profiles root.")
         return 1
 
+    # Never let the delete walk through a link into shared data.
+    survivors = _detach_links(target)
+    if survivors:
+        print(f"Refusing to remove '{name}': could not safely detach "
+              f"{', '.join(os.path.basename(p) for p in survivors)}.", file=sys.stderr)
+        print("    Deleting now could erase shared data. Remove those links by hand.",
+              file=sys.stderr)
+        return 1
+
     shutil.rmtree(target, ignore_errors=True)
     _AUTH_CACHE.pop(target, None)
+
+    # ignore_errors hides failures (a file held open on Windows, for instance), so
+    # check the result rather than announcing a removal that did not happen.
+    if os.path.exists(target):
+        print(f"Profile '{name}' was only partly removed - some files are in use "
+              f"or read-only.", file=sys.stderr)
+        print(f"    Close any session using it and delete {target} by hand.",
+              file=sys.stderr)
+        return 1
 
     if active_profile() == name:
         remaining = list_profiles()

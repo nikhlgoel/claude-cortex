@@ -21,6 +21,48 @@ from pathlib import Path
 GUARD_DECLINED_EXIT = 3
 
 
+def register_desktop_mcp(cfg_path, command, script):
+    """Add the Cortex MCP server to a Claude Desktop config without losing anything.
+
+    The installer used to treat "could not parse" as "empty" and then write, which
+    replaced a user's entire Desktop config - every other MCP server and setting -
+    with just the Cortex entry. A config that exists but is not valid JSON is now
+    left exactly as it is, and the user is told what to add by hand. Otherwise a
+    ``.bak`` is kept and the write is atomic. Returns True if the file was written.
+    """
+    cfg = {}
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            if not isinstance(cfg, dict):
+                raise ValueError("top level is not an object")
+        except (OSError, ValueError):
+            print(f"  ! Left {cfg_path} untouched: it is not valid JSON, so it was "
+                  f"not rewritten.")
+            print(f"    Add an mcpServers entry named 'claude-cortex' "
+                  f"(command: {command}, args: [{script}]) by hand.")
+            return False
+
+    servers = cfg.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        print(f"  ! Left {cfg_path} untouched: 'mcpServers' is not an object.")
+        return False
+    servers["claude-cortex"] = {"command": command, "args": [script]}
+
+    try:
+        if cfg_path.exists():
+            shutil.copy2(cfg_path, str(cfg_path) + ".bak")
+        tmp = str(cfg_path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, cfg_path)
+    except OSError as exc:
+        print(f"  ! Could not update {cfg_path}: {exc}")
+        return False
+    return True
+
+
 def print_header(title):
     print("=" * 70)
     print(f"          {title}")
@@ -444,24 +486,8 @@ def main():
         for d in desktop_dirs_win:
             d.mkdir(parents=True, exist_ok=True)
             cfg_p = d / "claude_desktop_config.json"
-            cfg = {}
-            if cfg_p.exists():
-                try:
-                    with open(cfg_p, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                except Exception:
-                    cfg = {}
-            cfg.setdefault("mcpServers", {})
-            cfg["mcpServers"]["claude-cortex"] = {
-                "command": "python",
-                "args": [cortex_mcp_script]
-            }
-            try:
-                with open(cfg_p, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f, indent=2)
+            if register_desktop_mcp(cfg_p, "python", cortex_mcp_script):
                 print(f"  ✓ Registered Cortex MCP tools in: {cfg_p.name} ({d.name})")
-            except Exception:
-                pass
 
     else:
         # Bash / Zsh PATH
@@ -518,24 +544,8 @@ def main():
             if d.exists() or (d.parent.exists() and "claude-profile" in d.name):
                 d.mkdir(parents=True, exist_ok=True)
                 cfg_p = d / "claude_desktop_config.json"
-                cfg = {}
-                if cfg_p.exists():
-                    try:
-                        with open(cfg_p, "r", encoding="utf-8") as f:
-                            cfg = json.load(f)
-                    except Exception:
-                        cfg = {}
-                cfg.setdefault("mcpServers", {})
-                cfg["mcpServers"]["claude-cortex"] = {
-                    "command": "python3",
-                    "args": [cortex_mcp_script]
-                }
-                try:
-                    with open(cfg_p, "w", encoding="utf-8") as f:
-                        json.dump(cfg, f, indent=2)
+                if register_desktop_mcp(cfg_p, "python3", cortex_mcp_script):
                     print(f"  ✓ Registered Cortex MCP tools in: {cfg_p}")
-                except Exception:
-                    pass
 
     print_header("Installation Complete! Claude Cortex is Ready Everywhere.")
     print("\nAccessible from:")

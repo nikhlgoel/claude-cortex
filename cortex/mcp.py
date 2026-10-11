@@ -23,6 +23,11 @@ from .paths import profile_dir
 
 SERVER_NAME = "cortex"
 
+# The tools scripts/cortex-mcp.py exposes. Kept in step with its TOOLS table by
+# tests/test_core_fixes.py, so this list cannot silently go stale.
+TOOL_NAMES = ("account_status", "recall_memory", "remember",
+              "analyze_code_risks", "decompile_binary", "evaluate_impact")
+
 
 def _server_path():
     """The MCP server script: installed copy first, then the checkout."""
@@ -55,8 +60,7 @@ def cmd_status(profile):
     if servers:
         print(f"  all MCP servers here: {', '.join(sorted(servers))}")
     print()
-    print("  Tools exposed: account_status, recall_memory, remember,")
-    print("                 analyze_code_risks, decompile_binary")
+    print("  Tools exposed: " + ", ".join(TOOL_NAMES))
     print()
     if SERVER_NAME not in servers:
         print(f"  Register with:  cc mcp add [{profile}]")
@@ -72,11 +76,6 @@ def cmd_add(profile, dry_run=False):
         return 1
 
     config = os.path.join(profile_dir(profile), ".claude.json")
-    data = jsonfile.read(config, {})
-    servers = data.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
-
     entry = {
         "type": "stdio",
         "command": _python(),
@@ -84,37 +83,45 @@ def cmd_add(profile, dry_run=False):
         "env": {},
     }
 
-    if servers.get(SERVER_NAME) == entry:
-        print(f"Already registered for profile '{profile}'.")
-        return 0
+    with jsonfile.file_lock(config):
+        data = jsonfile.read(config, {})
+        servers = data.get("mcpServers")
+        if not isinstance(servers, dict):
+            servers = {}
 
-    if dry_run:
-        print(f"[dry-run] would register '{SERVER_NAME}' for profile '{profile}':")
-        print(f"    command: {entry['command']} {server_path}")
-        return 0
+        if servers.get(SERVER_NAME) == entry:
+            print(f"Already registered for profile '{profile}'.")
+            return 0
 
-    servers[SERVER_NAME] = entry
-    data["mcpServers"] = servers
-    jsonfile.write(config, data)
+        if dry_run:
+            print(f"[dry-run] would register '{SERVER_NAME}' for profile '{profile}':")
+            print(f"    command: {entry['command']} {server_path}")
+            return 0
+
+        servers[SERVER_NAME] = entry
+        data["mcpServers"] = servers
+        jsonfile.write(config, data)
+
     print(f"Registered '{SERVER_NAME}' MCP server for profile '{profile}'.")
     print("Start a new session under that profile and the tools are available:")
-    print("  account_status, recall_memory, remember, analyze_code_risks, decompile_binary")
+    print("  " + ", ".join(TOOL_NAMES))
     return 0
 
 
 def cmd_remove(profile):
     config = os.path.join(profile_dir(profile), ".claude.json")
-    data = jsonfile.read(config, {})
-    servers = data.get("mcpServers")
-    if not isinstance(servers, dict) or SERVER_NAME not in servers:
-        print(f"Not registered for profile '{profile}'.")
-        return 0
-    del servers[SERVER_NAME]
-    if servers:
-        data["mcpServers"] = servers
-    else:
-        data.pop("mcpServers", None)
-    jsonfile.write(config, data)
+    with jsonfile.file_lock(config):
+        data = jsonfile.read(config, {})
+        servers = data.get("mcpServers")
+        if not isinstance(servers, dict) or SERVER_NAME not in servers:
+            print(f"Not registered for profile '{profile}'.")
+            return 0
+        del servers[SERVER_NAME]
+        if servers:
+            data["mcpServers"] = servers
+        else:
+            data.pop("mcpServers", None)
+        jsonfile.write(config, data)
     print(f"Removed '{SERVER_NAME}' MCP server from profile '{profile}'.")
     return 0
 

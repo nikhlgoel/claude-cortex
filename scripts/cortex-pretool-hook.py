@@ -4,80 +4,116 @@ Claude Cortex - PreToolUse Lifecycle Hook
 Intercepts tool commands before execution to prevent catastrophic token dumps
 (e.g., massive file cat, unpaged git logs, recursive scans, runaway test logs)
 that poison and permanently bloat the conversational context.
+
+The decision logic lives in :func:`check_command` so it can be tested directly;
+``main`` only does the stdin/exit-code plumbing. A hook must fail open: an
+internal error never blocks the user's command.
 """
 
-import sys
-import os
 import json
+import os
 import re
+import sys
 
-CATASTROPHIC_PATTERNS = [
-    (r"\bgit\s+log(?!\s+-n|\s+--oneline|\s+-[0-9]|\s+--stat)\b",
-     "Unpaged 'git log' dumps entire commit history. Use 'git log -n 10 --oneline'."),
-    (r"\btree\b(?!\s+-L|\s+--level|\s+-d)",
-     "Unbounded 'tree' command dumps thousands of paths. Use 'tree -L 2' or 'tree -L 3'."),
-    (r"\bfind\s+\.\s+-type\s+f\s*$",
-     "Unbounded recursive find dumps every file in the directory tree. Use targeted find or fd."),
-]
-
-BLOCKED_FILES = [
+LOCKFILES = [
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-    "Cargo.lock", "composer.lock", "Pipfile.lock", "poetry.lock"
+    "Cargo.lock", "composer.lock", "Pipfile.lock", "poetry.lock",
 ]
+
+# Tools whose command string this hook inspects. PowerShell matters: on Windows
+# it is often the only shell in use, and `Get-Content` dumps a file as readily as
+# `cat` does.
+SHELL_TOOLS = ("bash", "bashtool", "powershell")
+
+SIZE_CEILING_KB = 100
+
+# A pipe into one of these bounds the output, so the producer is harmless.
+BOUNDED = re.compile(r"\|\s*(?:head|tail|wc|grep|rg|less|more|"
+                     r"Select-Object|Select-String|Measure-Object)\b", re.IGNORECASE)
+
+# A command word, not just the letters: start of the command, or right after a
+# separator / `sudo`. This is what stops `git ls-tree`, `cargo tree`, and a path
+# like `src/tree/` from being mistaken for the `tree` command.
+_CMD_START = r"(?:^|[;&|(]\s*|\bsudo\s+)"
+
+_GIT_LOG = re.compile(r"\bgit\s+(?:-C\s+\S+\s+)?log\b")
+_GIT_LOG_BOUNDED = re.compile(r"(?:\s-n\s*\d|\s-\d+\b|--max-count|--oneline|--stat)")
+_TREE = re.compile(_CMD_START + r"tree\b")
+_TREE_BOUNDED = re.compile(r"(?:\s-L\s*\d|--level|\s-d\b)")
+_FIND_ALL = re.compile(r"\bfind\s+\.\s+-type\s+f\s*$")
+
+# File readers: POSIX cat, and PowerShell's Get-Content and its aliases.
+_READER = re.compile(r"(?:^|[;&|(]\s*)(cat|type|gc|get-content)\s+([^\s|><;]+)",
+                     re.IGNORECASE)
+_READER_BOUNDED = re.compile(r"-(?:TotalCount|Head|First|Tail|Last)\b", re.IGNORECASE)
+
+
+def _resolve(target, cwd):
+    """Resolve a path against the session's cwd, not this process's."""
+    target = os.path.expanduser(target.strip("'\""))
+    if not os.path.isabs(target) and cwd:
+        target = os.path.join(cwd, target)
+    return target
+
+
+def check_command(command, cwd=None):
+    """Return a human-readable reason to block ``command``, or None to allow it."""
+    cmd = (command or "").strip()
+    if not cmd:
+        return None
+    piped_bounded = bool(BOUNDED.search(cmd))
+
+    for match in _READER.finditer(cmd):
+        verb, target = match.group(1), match.group(2)
+        base = os.path.basename(target.strip("'\"").replace("\\", "/"))
+        if base in LOCKFILES and not piped_bounded:
+            return (f"Blocked '{verb} {base}'. Reading lockfiles dumps 20,000+ tokens "
+                    f"into context. Use 'grep', 'jq', or targeted inspection instead.")
+
+    if _GIT_LOG.search(cmd) and not _GIT_LOG_BOUNDED.search(cmd) and not piped_bounded:
+        return "Unpaged 'git log' dumps entire commit history. Use 'git log -n 10 --oneline'."
+
+    if _TREE.search(cmd) and not _TREE_BOUNDED.search(cmd) and not piped_bounded:
+        return ("Unbounded 'tree' command dumps thousands of paths. "
+                "Use 'tree -L 2' or 'tree -L 3'.")
+
+    if _FIND_ALL.search(cmd):
+        return ("Unbounded recursive find dumps every file in the directory tree. "
+                "Use targeted find or fd.")
+
+    if not piped_bounded and not _READER_BOUNDED.search(cmd):
+        for match in _READER.finditer(cmd):
+            path = _resolve(match.group(2), cwd)
+            if os.path.isfile(path):
+                size_kb = os.path.getsize(path) / 1024
+                if size_kb > SIZE_CEILING_KB:
+                    return (f"Blocked '{match.group(1)} {match.group(2)}' ({size_kb:.1f} KB). "
+                            f"File exceeds the {SIZE_CEILING_KB}KB token safety ceiling. "
+                            f"Use head/tail/grep or a line-bounded read.")
+    return None
+
 
 def main():
     try:
         raw_input = sys.stdin.read()
         if not raw_input.strip():
             sys.exit(0)
-        
+
         data = json.loads(raw_input)
-        tool_name = data.get("tool_name", "")
-        tool_input = data.get("tool_input", {})
-        
-        if tool_name.lower() in ("bash", "bashtool"):
-            cmd = tool_input.get("command", "").strip()
-            
-            # Check for cat on lockfiles or huge known artifacts
-            for lockfile in BLOCKED_FILES:
-                if re.search(rf"\bcat\s+.*?{re.escape(lockfile)}\b", cmd):
-                    print(
-                        f"[Claude Cortex Guard] Blocked 'cat {lockfile}'. "
-                        f"Reading lockfiles dumps 20,000+ tokens into context. "
-                        f"Use 'grep', 'jq', or targeted inspection instead.",
-                        file=sys.stderr
-                    )
-                    sys.exit(2)
-            
-            # Check catastrophic command patterns
-            for pattern, reason in CATASTROPHIC_PATTERNS:
-                if re.search(pattern, cmd):
-                    print(
-                        f"[Claude Cortex Guard] Blocked command: {reason}",
-                        file=sys.stderr
-                    )
-                    sys.exit(2)
+        if str(data.get("tool_name", "")).lower() not in SHELL_TOOLS:
+            sys.exit(0)
 
-            # Check for cat on files larger than 100KB
-            cat_match = re.search(r"\bcat\s+([^\s|><;]+)", cmd)
-            if cat_match:
-                target_file = cat_match.group(1).strip("'\"")
-                if os.path.exists(target_file) and os.path.isfile(target_file):
-                    size_kb = os.path.getsize(target_file) / 1024
-                    if size_kb > 100:
-                        print(
-                            f"[Claude Cortex Guard] Blocked 'cat {target_file}' ({size_kb:.1f} KB). "
-                            f"File exceeds 100KB token safety ceiling. "
-                            f"Use 'head -n 50', 'tail', 'grep', or line-bounded inspection.",
-                            file=sys.stderr
-                        )
-                        sys.exit(2)
-
+        tool_input = data.get("tool_input") or {}
+        reason = check_command(tool_input.get("command", ""), data.get("cwd"))
     except Exception:
         # Fail open: never break execution on internal hook error
         sys.exit(0)
 
+    if reason:
+        print(f"[Claude Cortex Guard] {reason}", file=sys.stderr)
+        sys.exit(2)
     sys.exit(0)
+
 
 if __name__ == "__main__":
     main()

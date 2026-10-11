@@ -10,9 +10,11 @@ Allows seamless fallback and switching between:
 
 import os
 import sys
+import copy
 import json
 import argparse
 import subprocess
+import tempfile
 import time
 
 PROVIDERS_FILE = os.path.expanduser("~/.claude/providers.json")
@@ -56,29 +58,88 @@ DEFAULT_CONFIG = {
 }
 
 def load_providers():
+    # Always hand out a copy. Returning DEFAULT_CONFIG itself let callers mutate
+    # the module-level defaults, so one edit leaked into every later call.
     if not os.path.exists(PROVIDERS_FILE):
-        save_providers(DEFAULT_CONFIG)
-        return DEFAULT_CONFIG
+        defaults = copy.deepcopy(DEFAULT_CONFIG)
+        save_providers(defaults)
+        return defaults
     try:
-        with open(PROVIDERS_FILE) as f:
+        with open(PROVIDERS_FILE, encoding="utf-8") as f:
             data = json.load(f)
-            for k, v in DEFAULT_CONFIG["providers"].items():
-                if k not in data.get("providers", {}):
-                    data.setdefault("providers", {})[k] = v
-            return data
-    except Exception:
-        return DEFAULT_CONFIG
+        if not isinstance(data, dict):
+            raise ValueError("top level is not an object")
+    except (OSError, ValueError) as exc:
+        # Falling back to defaults is only safe if nothing then overwrites the
+        # file: the very next save would erase every stored API key. Keep the
+        # unreadable original beside it and say so.
+        keep = f"{PROVIDERS_FILE}.corrupt-{int(time.time())}"
+        try:
+            os.replace(PROVIDERS_FILE, keep)
+            _restrict_to_owner(keep)
+            print(f"warning: {PROVIDERS_FILE} could not be read ({exc}).\n"
+                  f"         The original was kept as {keep}; starting from defaults.",
+                  file=sys.stderr)
+        except OSError:
+            pass
+        return copy.deepcopy(DEFAULT_CONFIG)
+    for k, v in DEFAULT_CONFIG["providers"].items():
+        if k not in data.get("providers", {}):
+            data.setdefault("providers", {})[k] = copy.deepcopy(v)
+    return data
+
+
+def _restrict_to_owner(path):
+    """Make ``path`` readable by its owner only. Returns True when enforced.
+
+    ``os.chmod(0o600)`` only means something on POSIX. On Windows it toggles the
+    read-only flag and nothing else, so an API key file kept the default ACL,
+    which on many machines grants read access to every local user. There the
+    inherited permissions are stripped and the file is granted to the current
+    user alone.
+    """
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    if os.name != "nt":
+        return True
+    user = os.environ.get("USERNAME")
+    if not user:
+        return False
+    domain = os.environ.get("USERDOMAIN")
+    principal = f"{domain}\\{user}" if domain else user
+    try:
+        result = subprocess.run(
+            ["icacls", path, "/inheritance:r", "/grant:r", f"{principal}:F"],
+            capture_output=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
 
 def save_providers(data):
-    os.makedirs(os.path.dirname(PROVIDERS_FILE), exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(PROVIDERS_FILE, flags, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2)
+    """Atomically write the provider file, readable by its owner only.
+
+    The old version truncated the live file and then wrote into it, so a crash in
+    between left an empty or half-written file holding the user's API keys.
+    """
+    directory = os.path.dirname(PROVIDERS_FILE)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".providers-", suffix=".tmp")
     try:
-        os.chmod(PROVIDERS_FILE, 0o600)
-    except Exception:
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, PROVIDERS_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    if not _restrict_to_owner(PROVIDERS_FILE):
+        print(f"warning: could not restrict {PROVIDERS_FILE} to your account; "
+              f"it contains API keys - check its permissions.", file=sys.stderr)
 
 # Programmatic API & Testing Aliases
 load_config = load_providers
@@ -119,12 +180,23 @@ def start_cortex_gateway(port=8088):
     env = os.environ.copy()
     env["CORTEX_GATEWAY_PORT"] = str(port)
 
+    # The gateway is meant to outlive this command, so it must not share our
+    # console. start_new_session only does that on POSIX; on Windows it is
+    # ignored, and the gateway would stay attached - closing the terminal or
+    # pressing Ctrl+C there would kill it. Detach it explicitly instead.
+    detach = {}
+    if os.name == "nt":
+        detach["creationflags"] = (subprocess.DETACHED_PROCESS
+                                   | subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        detach["start_new_session"] = True
     subprocess.Popen(
         [sys.executable, gateway_script, "--port", str(port)],
         env=env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True
+        **detach
     )
     time.sleep(0.4)
     return is_proxy_running(port)

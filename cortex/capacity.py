@@ -77,30 +77,112 @@ def inspect(name: str, check_auth=True):
         record["detail"] = "no usage data recorded yet"
         return record
 
+    reading = _read_nested(usage) if isinstance(usage.get("utilization"), dict) \
+        else _read_flat(usage)
+
+    if reading is None:
+        record["state"] = UNKNOWN
+        record["detail"] = "usage data present but unreadable"
+        return record
+    if reading.get("stale"):
+        # Every recorded window has already reset. That says the old numbers no
+        # longer apply, not that the account is free - it may have been used
+        # since. Same rule as everywhere else here: no evidence, no verdict.
+        record["state"] = UNKNOWN
+        record["detail"] = "recorded usage is from a window that has since reset"
+        return record
+
+    pct, reset = reading["pct"], reading.get("reset")
+    if reset:
+        record["resets_in"] = (reset - datetime.now(timezone.utc)).total_seconds()
+    record["utilization"] = pct
+
+    if reading["blocked"]:
+        record["state"] = KNOWN_LIMITED
+        reason = reading.get("reason") or "limit reached"
+        record["detail"] = f"{reason}, resets in {_humanize(record['resets_in'])}" \
+            if reset else reason
+    else:
+        record["state"] = KNOWN_FREE
+        record["detail"] = f"{100 - pct:.0f}% capacity remaining"
+    return record
+
+
+def _read_nested(usage):
+    """Parse the shape Claude Code actually records.
+
+    ``cachedUsageUtilization.utilization`` holds ``five_hour`` and ``seven_day``
+    windows (each ``{utilization: <percent>, resets_at: <time>}``) and a
+    ``limits`` list of active quota records. This is the layout the original
+    capacity code was written against; an intermediate rewrite looked for flat
+    key names instead and so reported every profile with real data as
+    "unreadable", which made automatic failover impossible.
+
+    Returns None if nothing usable is present, ``{"stale": True}`` if everything
+    recorded has expired, else ``{pct, blocked, reason, reset}``.
+    """
+    nested = usage["utilization"]
+    now = datetime.now(timezone.utc)
+    percents, blocking = [], []     # blocking: (reset or None, reason)
+    seen = 0
+
+    for key, label in (("five_hour", "5-hour limit reached"),
+                       ("seven_day", "7-day limit reached")):
+        window = nested.get(key)
+        if not isinstance(window, dict) or not isinstance(window.get("utilization"),
+                                                         (int, float)):
+            continue
+        seen += 1
+        reset = _parse_reset(window.get("resets_at"))
+        if reset and now >= reset:
+            continue
+        pct = float(window["utilization"])
+        percents.append(pct)
+        if pct >= 99:
+            blocking.append((reset, label))
+
+    for limit in nested.get("limits") or []:
+        if not isinstance(limit, dict):
+            continue
+        seen += 1
+        reset = _parse_reset(limit.get("resets_at"))
+        if reset and now >= reset:
+            continue
+        pct = limit.get("percent")
+        pct = float(pct) if isinstance(pct, (int, float)) else 0.0
+        percents.append(pct)
+        if pct >= 100 or limit.get("severity") == "critical" or limit.get("is_active"):
+            blocking.append((reset, f"{limit.get('kind') or 'quota'} limit active"))
+
+    if not seen:
+        return None
+    if not percents:                      # all of it has expired
+        return {"stale": True}
+
+    blocked = bool(blocking)
+    dated = [r for r, _ in blocking if r]
+    earliest = min(dated) if dated else None
+    reason = next((why for r, why in blocking if r == earliest), "") if blocked else ""
+    if blocked and not reason:
+        reason = blocking[0][1]
+    return {"pct": min(100.0, max(percents)), "blocked": blocked,
+            "reason": reason, "reset": earliest}
+
+
+def _read_flat(usage):
+    """Fallback for flat key names (older/other cache layouts)."""
     pct = None
     for key in ("fiveHourUtilization", "five_hour_utilization",
                 "sevenDayUtilization", "seven_day_utilization", "utilization"):
         value = usage.get(key)
         if isinstance(value, (int, float)):
             pct = max(pct or 0, float(value))
-    if pct is not None and pct <= 1.0:
-        pct *= 100.0
-
-    reset = _parse_reset(usage.get("resetsAt") or usage.get("resets_at"))
-    if reset:
-        record["resets_in"] = (reset - datetime.now(timezone.utc)).total_seconds()
-
-    record["utilization"] = pct
     if pct is None:
-        record["state"] = UNKNOWN
-        record["detail"] = "usage data present but unreadable"
-    elif pct >= 99:
-        record["state"] = KNOWN_LIMITED
-        record["detail"] = f"limit reached, resets in {_humanize(record['resets_in'])}"
-    else:
-        record["state"] = KNOWN_FREE
-        record["detail"] = f"{100 - pct:.0f}% capacity remaining"
-    return record
+        return None
+    if pct <= 1.0:
+        pct *= 100.0
+    reset = _parse_reset(usage.get("resetsAt") or usage.get("resets_at"))
+    return {"pct": pct, "blocked": pct >= 99, "reason": "limit reached", "reset": reset}
 
 
 def survey(check_auth=True):

@@ -168,6 +168,36 @@ def tool_decompile_binary(args):
     return output or result.stderr or "analysis produced no output"
 
 
+def tool_evaluate_impact(args):
+    """Heuristic risk score for a change to one file (see cortex-scorer.py)."""
+    path = (args.get("path") or "").strip()
+    if not path:
+        return "Provide a 'path' to evaluate."
+    root = (args.get("root") or "").strip() or os.getcwd()
+    script = scripts_dir() / "cortex-scorer.py"
+    if not script.is_file():
+        return "The scorer is not installed. Reinstall Cortex."
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), "--path", path, "--root", root],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"scorer failed to run: {exc}"
+
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        return result.stderr.strip() or result.stdout.strip() or "scorer produced no output"
+    if "error" in data:
+        return f"Cannot score: {data['error']}"
+
+    headline = f"OAS {data['score']}/100 -> {data['recommendation']}"
+    if data["unmeasured"]:
+        headline += f" (unmeasured: {', '.join(sorted(data['unmeasured']))})"
+    return headline + "\n" + json.dumps(data, indent=2)
+
+
 TOOLS = {
     "account_status": {
         "description": "Show Claude account capacity per profile. Unknown "
@@ -226,6 +256,26 @@ TOOLS = {
             "required": ["path"],
         },
         "handler": tool_decompile_binary,
+    },
+    "evaluate_impact": {
+        "description": "Heuristic risk score (0-100, higher is safer) for a change "
+                       "to one file: complexity change vs. git HEAD, whether tests "
+                       "reference it, whether a committed copy exists to restore, "
+                       "destructive patterns, and how many files depend on it. "
+                       "Metrics it cannot measure are listed, never guessed. A "
+                       "score below 50 means stop and ask the user. It is a risk "
+                       "indicator, not a proof of correctness.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "the file that was or "
+                                                          "will be changed"},
+                "root": {"type": "string", "description": "project root "
+                                                          "(default: working dir)"},
+            },
+            "required": ["path"],
+        },
+        "handler": tool_evaluate_impact,
     },
 }
 

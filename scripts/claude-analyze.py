@@ -350,8 +350,22 @@ def walk(root):
     return out
 
 
+#: Source files larger than this are almost always generated or minified. Reading
+#: one whole into memory (and then into an AST) can exhaust RAM, and the findings
+#: would be noise anyway. Skip, but say so: a silently skipped file looks clean.
+MAX_SOURCE_BYTES = 5 * 1024 * 1024
+
+
 def analyse(path):
     try:
+        size = os.path.getsize(path)
+        if size > MAX_SOURCE_BYTES:
+            return [Finding(FRAGILE, "coverage", path, 0,
+                            "File not analysed: too large",
+                            f"{size / 1024 / 1024:.1f} MB exceeds the "
+                            f"{MAX_SOURCE_BYTES // 1024 // 1024} MB limit, so it was "
+                            f"skipped rather than read into memory. Absence of "
+                            f"findings for this file means nothing.")]
         with open(path, encoding="utf-8", errors="replace") as fh:
             source = fh.read()
     except OSError:

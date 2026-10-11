@@ -19,6 +19,13 @@
 
 set -euo pipefail
 
+# `set -u` catches an unset HOME but not an empty one; with HOME empty every
+# "${HOME}/..." target below would resolve to a path under "/".
+if [ -z "${HOME:-}" ] || [ ! -d "${HOME}" ]; then
+    echo "error: HOME is not set to an existing directory; refusing to continue." >&2
+    exit 1
+fi
+
 DRY_RUN=1
 PURGE_PROFILES=0
 

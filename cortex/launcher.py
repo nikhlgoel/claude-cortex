@@ -23,15 +23,26 @@ What remains are variables that are real, documented, and do something useful.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 
 from . import binary, profiles
 from .paths import profile_dir
 
+# Model IDs are Anthropic's exact strings. The short flags (-s, -o, -H) keep their
+# long-standing targets so existing habits do not change under anyone; the newer
+# generations are reached by explicit flags. ``--fable`` means the newest Fable.
+#
+# There is deliberately no ``-f``: it is too easy to collide with a Claude Code
+# flag, and a one-letter alias adds nothing over ``--fable``.
 MODEL_ALIASES = {
     "-s": "claude-sonnet-5", "--sonnet": "claude-sonnet-5", "--sonnet-5": "claude-sonnet-5",
+    "--sonnet-5-5": "claude-sonnet-5-5",
     "-o": "claude-opus-5", "--opus": "claude-opus-5", "--opus-5": "claude-opus-5",
+    "--opus-5-5": "claude-opus-5-5", "-o55": "claude-opus-5-5",
+    "--fable": "claude-fable-5-1", "--fable-5-1": "claude-fable-5-1",
+    "--fable-5": "claude-fable-5",
     "-H": "claude-haiku-4-5", "--haiku": "claude-haiku-4-5", "--haiku-4-5": "claude-haiku-4-5",
     "--sonnet-4-5": "claude-sonnet-4-5", "--opus-4-5": "claude-opus-4-5",
 }
@@ -94,7 +105,9 @@ def translate_args(argv):
             i += 1
             continue
 
-        if arg in ("-e", "--effort", "-r", "--reasoning"):
+        # No "-r" here: that is Claude Code's own --resume, and rewriting it into
+        # an effort flag would silently break resuming a session.
+        if arg in ("-e", "--effort", "--reasoning"):
             value = argv[i + 1] if i + 1 < len(argv) else "medium"
             if value not in VALID_EFFORT:
                 return None, (f"invalid effort '{value}'. "
@@ -163,10 +176,26 @@ def launch(profile: str, argv, extra_env=None, continue_session=False):
             print(f"cc: failed to launch Claude Code: {exc}", file=sys.stderr)
             return 1
 
+    return _run_child([exe] + args, env)
+
+
+def _run_child(command, env):
+    """Run Claude Code as a child and wait, without letting Ctrl+C reach us.
+
+    On Windows a console Ctrl+C is delivered to every process attached to the
+    console, this parent included. Left alone, Python raises KeyboardInterrupt in
+    ``subprocess.run`` and kills the child - so pressing Ctrl+C to interrupt a
+    response in Claude Code could end the whole session. The child handles its
+    own Ctrl+C; the parent's only job is to wait for it, so ignore SIGINT here
+    for exactly as long as the child lives.
+    """
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
-        return subprocess.run([exe] + args, env=env).returncode
+        return subprocess.run(command, env=env).returncode
     except KeyboardInterrupt:
         return 130
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"cc: failed to launch Claude Code: {exc}", file=sys.stderr)
         return 1
+    finally:
+        signal.signal(signal.SIGINT, previous)

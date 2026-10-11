@@ -15,15 +15,51 @@ Features:
 import os
 import sys
 import json
+import time
 import argparse
 import urllib.request
+import urllib.error
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # A proxy MUST bound its upstream wait. Without this a Gemini endpoint that
 # accepts the connection and never replies blocks the client forever, which is
 # indistinguishable from the proxy having crashed.
 UPSTREAM_TIMEOUT = 120  # seconds
-import urllib.error
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+#: Upstream statuses that mean "try again", not "your request is wrong".
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 529})
+RETRY_ATTEMPTS = 3
+RETRY_MAX_WAIT = 20.0
+
+
+def open_with_retry(request, timeout, attempts=RETRY_ATTEMPTS, sleep=time.sleep):
+    """``urlopen`` that retries transient failures while *opening* the connection.
+
+    Mirrors the helper in cortex-gateway.py (these are standalone scripts). Only
+    the wait for response headers is retried; a stream already being forwarded
+    cannot be replayed, and a read timeout is not retried so one hung request
+    does not become three.
+    """
+    delay = 1.0
+    for attempt in range(1, attempts + 1):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRYABLE_STATUS or attempt == attempts:
+                raise
+            header = exc.headers.get("Retry-After") if exc.headers else None
+            exc.close()
+            try:
+                wait = float(header) if header else delay
+            except ValueError:
+                wait = delay
+        except urllib.error.URLError as exc:
+            if not isinstance(exc.reason, ConnectionError) or attempt == attempts:
+                raise
+            wait = delay
+        sleep(min(max(wait, 0.0), RETRY_MAX_WAIT))
+        delay *= 2
+
 
 DEFAULT_PORT = int(os.environ.get("GEMINI_PROXY_PORT", 8088))
 DEFAULT_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -161,7 +197,7 @@ class GeminiProxyHandler(BaseHTTPRequestHandler):
             )
 
             try:
-                with urllib.request.urlopen(gemini_req, timeout=UPSTREAM_TIMEOUT) as resp:
+                with open_with_retry(gemini_req, timeout=UPSTREAM_TIMEOUT) as resp:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
@@ -248,7 +284,7 @@ class GeminiProxyHandler(BaseHTTPRequestHandler):
             )
 
             try:
-                with urllib.request.urlopen(gemini_req, timeout=UPSTREAM_TIMEOUT) as resp:
+                with open_with_retry(gemini_req, timeout=UPSTREAM_TIMEOUT) as resp:
                     resp_data = json.loads(resp.read().decode("utf-8"))
                     full_text = ""
                     candidates = resp_data.get("candidates", [])

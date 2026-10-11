@@ -26,6 +26,7 @@ import os
 import time
 import urllib.request
 
+from . import jsonfile
 from .paths import shared_claude_dir
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
@@ -34,10 +35,18 @@ FETCH_TIMEOUT = 12
 
 # Claude models reachable on a subscription (OAuth), where per-token price is not
 # the relevant number. Kept minimal and labelled; not a pricing claim.
+#
+# IDs are Anthropic's exact strings. Every one is reachable from a launcher flag
+# (see launcher.MODEL_ALIASES); tests/test_core_fixes.py keeps the two in step so
+# the catalog never advertises a model ``cc`` cannot select.
 SUBSCRIPTION_MODELS = [
-    ("claude-opus-5", "Opus 5", "deepest reasoning"),
-    ("claude-sonnet-5", "Sonnet 5", "best all-round coding"),
-    ("claude-haiku-4-5", "Haiku 4.5", "fast and cheap"),
+    ("claude-fable-5-1", "Fable 5.1", "most capable (cc --fable)"),
+    ("claude-fable-5", "Fable 5", "previous Fable (cc --fable-5)"),
+    ("claude-opus-5-5", "Opus 5.5", "current Opus (cc --opus-5-5)"),
+    ("claude-opus-5", "Opus 5", "deepest reasoning (cc -o)"),
+    ("claude-sonnet-5-5", "Sonnet 5.5", "current Sonnet (cc --sonnet-5-5)"),
+    ("claude-sonnet-5", "Sonnet 5", "best all-round coding (cc -s)"),
+    ("claude-haiku-4-5", "Haiku 4.5", "fast and cheap (cc -H)"),
 ]
 
 
@@ -55,12 +64,10 @@ def _read_cache():
 
 
 def _write_cache(models):
-    path = _cache_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump({"fetched_at": int(time.time()), "models": models}, fh)
-    os.replace(tmp, path)
+    # jsonfile.write is atomic with a unique temp name, so two `cc model` runs
+    # at once cannot trample one shared ".tmp" file. A cache needs no backup.
+    jsonfile.write(_cache_path(),
+                   {"fetched_at": int(time.time()), "models": models}, backup=False)
 
 
 def fetch(force=False):
@@ -170,7 +177,8 @@ def render(free_only=False, query=None, force=False, limit=40):
                      f" or 'cc model <search>')")
     lines.append("")
     lines.append(f"  {total} model(s){' (free only)' if free_only else ''}. "
-                 f"Switch with a provider: cc provider set openrouter && cc model set <id>")
+                 f"Use one: cc provider set openrouter && "
+                 f"cc provider model openrouter <id>")
     lines.append("=" * 78)
     return "\n".join(lines), True
 
