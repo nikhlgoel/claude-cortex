@@ -23,7 +23,6 @@ import sys
 import json
 import time
 import argparse
-import threading
 import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -86,18 +85,63 @@ GEMINI_MODEL_MAP = {
 }
 
 def get_active_provider_config():
-    """Reads current provider settings from ~/.claude/providers.json."""
+    """Reads current provider settings from ~/.claude/providers.json.
+
+    An unreadable or malformed file returns ``{"type": "invalid", "error": ...}``,
+    NOT the OAuth default. The old fallback mapped any read error to type "oauth",
+    which had no route and fell through to the Gemini handler - so a corrupt file
+    could send a request (and the API key Claude Code attached to it) to Google.
+    """
     if not os.path.exists(PROVIDERS_FILE):
-        return {"type": "oauth", "name": "OAuth"}
+        return {"type": "oauth", "name": "OAuth", "key_name": "oauth"}
     try:
-        with open(PROVIDERS_FILE) as f:
+        with open(PROVIDERS_FILE, encoding="utf-8") as f:
             data = json.load(f)
-            active = data.get("active_provider", "oauth")
-            prov = data.get("providers", {}).get(active, {})
-            prov["key_name"] = active
-            return prov
-    except Exception:
-        return {"type": "oauth", "name": "OAuth"}
+        active = data.get("active_provider", "oauth")
+        prov = dict(data.get("providers", {}).get(active) or {})
+    except (OSError, ValueError, AttributeError, TypeError) as exc:
+        print(f"cortex-gateway: cannot read {PROVIDERS_FILE}: {exc}", file=sys.stderr)
+        return {"type": "invalid", "name": "unreadable providers.json",
+                "key_name": "", "error": str(exc)}
+    prov["key_name"] = active
+    if not prov.get("type") and active not in ROUTE_BY_NAME:
+        return {"type": "invalid", "name": active, "key_name": active,
+                "error": f"provider '{active}' has no entry or no type in providers.json"}
+    return prov
+
+
+# Which upstream a provider means. The built-in providers are identified by NAME
+# because their generic default type ("api_key") says nothing about the vendor: the
+# default OpenRouter entry has type "api_key", so type-based dispatch sent the user's
+# OpenRouter key to api.anthropic.com. The type is only a fallback for custom entries.
+ROUTE_BY_NAME = {"openrouter": "openrouter", "gemini": "gemini",
+                 "anthropic": "anthropic", "local": "local"}
+ROUTE_BY_TYPE = {"openrouter": "openrouter", "gemini_proxy": "gemini",
+                 "anthropic": "anthropic", "local": "local"}
+
+# Gemini finishReason -> Anthropic stop_reason. Anything unlisted is a normal stop.
+GEMINI_STOP_REASONS = {"STOP": "end_turn", "MAX_TOKENS": "max_tokens",
+                       "SAFETY": "refusal", "RECITATION": "refusal", "BLOCKLIST": "refusal",
+                       "PROHIBITED_CONTENT": "refusal", "SPII": "refusal"}
+
+
+def resolve_route(prov):
+    """Return ``(route, None)`` or ``(None, reason)`` for an active provider entry.
+
+    There is deliberately no default route. Guessing one (Gemini, or Anthropic)
+    means a misconfiguration ships a credential to the wrong vendor.
+    """
+    ptype = prov.get("type") or ""
+    if ptype == "invalid":
+        return None, f"providers.json is unusable ({prov.get('error', 'unknown error')}); fix or reset it with 'cc provider reset'"
+    name = prov.get("key_name") or ""
+    if name in ROUTE_BY_NAME:
+        return ROUTE_BY_NAME[name], None
+    if ptype in ROUTE_BY_TYPE:
+        return ROUTE_BY_TYPE[ptype], None
+    if ptype == "oauth":
+        return None, "the active provider is the Claude subscription (OAuth); the gateway only serves API-key and local providers"
+    return None, f"provider '{name or '?'}' has unsupported type '{ptype or 'none'}'"
 
 def apply_ot_acr_compression(req_data, max_retained_turns=2, tombstone_threshold=300):
     """
@@ -126,13 +170,18 @@ def apply_ot_acr_compression(req_data, max_retained_turns=2, tombstone_threshold
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     res_content = block.get("content", "")
+                    if isinstance(res_content, list):
+                        # Claude Code commonly sends tool output as a list of text
+                        # blocks; only plain strings were ever compressed.
+                        res_content = "".join(b.get("text", "") for b in res_content
+                                              if isinstance(b, dict) and b.get("type") == "text")
                     if isinstance(res_content, str) and len(res_content) > tombstone_threshold:
-                        tool_id = block.get("tool_use_id", "unknown")
                         pruned_bytes += len(res_content)
-                        tombstone = (
-                            f"[Tool Output Verified: {len(res_content)} characters processed. "
-                            f"Execution succeeded and incorporated into working state.]"
-                        )
+                        # Neutral wording. The old text claimed "Execution succeeded"
+                        # for EVERY elided result, including is_error ones, telling the
+                        # model a failed command had worked and suppressing a retry.
+                        outcome = "an ERROR result" if block.get("is_error") else "output"
+                        tombstone = f"[Earlier tool {outcome} elided to save context: {len(res_content)} characters.]"
                         new_block = dict(block)
                         new_block["content"] = tombstone
                         new_content.append(new_block)
@@ -215,26 +264,33 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
                 pass
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self.send_anthropic_error(400, "invalid_request_error", "Invalid Content-Length header")
+            return
         body = self.rfile.read(content_length)
         try:
             req_data = json.loads(body.decode("utf-8"))
-        except Exception as e:
+        except (ValueError, UnicodeDecodeError) as e:
             self.send_anthropic_error(400, "invalid_request_error", f"Invalid JSON payload: {e}")
             return
 
         prov = get_active_provider_config()
-        prov_type = prov.get("type", "gemini_proxy")
+        route, problem = resolve_route(prov)
 
-        if prov_type == "openrouter":
+        if route is None:
+            # Refuse. Every previous default (Gemini, Anthropic) shipped the caller's
+            # credential to a vendor the user had not chosen.
+            self.send_anthropic_error(500, "api_error", f"Cortex gateway: {problem}")
+        elif route == "openrouter":
             self.handle_openrouter_dispatch(req_data, prov)
-        elif prov_type == "gemini_proxy":
+        elif route == "gemini":
             self.handle_gemini_dispatch(req_data, prov)
-        elif prov_type in ("api_key", "anthropic"):
+        elif route == "anthropic":
             self.handle_anthropic_dispatch(req_data, prov)
-        else:
-            # Default to Gemini dispatch
-            self.handle_gemini_dispatch(req_data, prov)
+        elif route == "local":
+            self.handle_local_dispatch(req_data, prov)
 
     # -------------------------------------------------------------------------
     # Route 1: OpenRouter Dispatch with OT-ACR Token Compression
@@ -268,7 +324,17 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
                 headers[h] = v
 
         upstream_req = urllib.request.Request(target_url, data=payload_bytes, headers=headers, method="POST")
+        self.relay(upstream_req, "OpenRouter")
 
+    def relay(self, upstream_req, label):
+        """Open ``upstream_req`` and relay the response to the client, byte for byte.
+
+        Tracks whether response headers have gone out. A failure after that point
+        must be reported as an SSE ``event: error`` inside the live stream; the
+        earlier handlers always sent a second HTTP status line into it, which
+        corrupted the stream the client was parsing.
+        """
+        headers_sent = False
         try:
             with open_with_retry(upstream_req, timeout=300) as resp:
                 self.send_response(resp.status)
@@ -277,6 +343,7 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
                         self.send_header(key, value)
                 self.send_header("Connection", "close")
                 self.end_headers()
+                headers_sent = True
 
                 while True:
                     chunk = resp.read(4096)
@@ -284,11 +351,15 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
                     self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return                      # the client went away; nobody to tell
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="ignore")
-            self.send_anthropic_error(e.code, "api_error", f"OpenRouter Upstream Error: {err_body}")
+            self.send_anthropic_error(e.code, "api_error", f"{label} Upstream Error: {err_body}",
+                                      headers_sent=headers_sent)
         except Exception as e:
-            self.send_anthropic_error(500, "api_error", f"OpenRouter Connection Error: {e}")
+            self.send_anthropic_error(500, "api_error", f"{label} Connection Error: {e}",
+                                      headers_sent=headers_sent)
 
     # -------------------------------------------------------------------------
     # Route 2: Google Gemini Dispatch with Multi-turn Translation & Heartbeats
@@ -384,7 +455,10 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
                             "role": "assistant",
                             "model": raw_model,
                             "content": [],
-                            "usage": {"input_tokens": 150, "output_tokens": 0}
+                            # An estimate (~4 chars/token); the real figure arrives in
+                            # message_delta from Gemini's usageMetadata.
+                            "usage": {"input_tokens": max(1, len(json.dumps(payload)) // 4),
+                                      "output_tokens": 0}
                         }
                     }
                     self.wfile.write(f"event: message_start\ndata: {json.dumps(start_ev)}\n\n".encode("utf-8"))
@@ -399,50 +473,80 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
 
                     # 3. Stream chunks
+                    usage_meta = {}
+                    finish_reason = None
                     for line in resp:
                         line_str = line.decode("utf-8", errors="ignore").strip()
-                        if line_str.startswith("data: "):
-                            data_content = line_str[6:].strip()
-                            if not data_content:
-                                continue
-                            try:
-                                chunk = json.loads(data_content)
-                                candidates = chunk.get("candidates", [])
-                                if candidates:
-                                    content_obj = candidates[0].get("content", {})
-                                    parts_list = content_obj.get("parts", [])
-                                    for p in parts_list:
-                                        t_text = p.get("text", "")
-                                        if t_text:
-                                            delta_ev = {
-                                                "type": "content_block_delta",
-                                                "index": 0,
-                                                "delta": {"type": "text_delta", "text": t_text}
-                                            }
-                                            self.wfile.write(f"event: content_block_delta\ndata: {json.dumps(delta_ev)}\n\n".encode("utf-8"))
-                                            self.wfile.flush()
-                            except Exception:
-                                pass
+                        if not line_str.startswith("data: "):
+                            continue
+                        data_content = line_str[6:].strip()
+                        if not data_content:
+                            continue
+                        # Only the PARSE is tolerant. The old try/except wrapped the
+                        # socket writes too, so a client disconnect was swallowed and
+                        # the loop kept draining (and paying for) the upstream stream,
+                        # and an upstream {"error": ...} chunk was dropped, leaving the
+                        # client a normal-looking empty answer.
+                        try:
+                            chunk = json.loads(data_content)
+                        except ValueError:
+                            continue
+                        if not isinstance(chunk, dict):
+                            continue
+                        if chunk.get("error"):
+                            err = chunk["error"]
+                            raise RuntimeError(f"Gemini stream error: {err.get('message', err) if isinstance(err, dict) else err}")
+                        usage_meta = chunk.get("usageMetadata") or usage_meta
+                        candidates = chunk.get("candidates") or []
+                        if not candidates:
+                            feedback = chunk.get("promptFeedback") or {}
+                            if feedback.get("blockReason"):
+                                finish_reason = "SAFETY"
+                            continue
+                        finish_reason = candidates[0].get("finishReason") or finish_reason
+                        for p in (candidates[0].get("content") or {}).get("parts", []):
+                            t_text = p.get("text", "")
+                            if t_text:
+                                delta_ev = {
+                                    "type": "content_block_delta",
+                                    "index": 0,
+                                    "delta": {"type": "text_delta", "text": t_text}
+                                }
+                                self.wfile.write(f"event: content_block_delta\ndata: {json.dumps(delta_ev)}\n\n".encode("utf-8"))
+                                self.wfile.flush()
 
-                    # 4. Content block stop & message delta
+                    # 4. Content block stop & message delta, with the numbers Gemini
+                    # actually reported. Claude Code uses usage for context accounting
+                    # and auto-compact, so fixed placeholders (150 in / 200 out, always
+                    # end_turn) misled it.
                     block_stop = {"type": "content_block_stop", "index": 0}
                     self.wfile.write(f"event: content_block_stop\ndata: {json.dumps(block_stop)}\n\n".encode("utf-8"))
 
                     msg_delta = {
                         "type": "message_delta",
-                        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                        "usage": {"output_tokens": 200}
+                        "delta": {"stop_reason": GEMINI_STOP_REASONS.get(finish_reason, "end_turn"),
+                                  "stop_sequence": None},
+                        "usage": {"input_tokens": int(usage_meta.get("promptTokenCount") or 0),
+                                  "output_tokens": int(usage_meta.get("candidatesTokenCount") or 0)}
                     }
                     self.wfile.write(f"event: message_delta\ndata: {json.dumps(msg_delta)}\n\n".encode("utf-8"))
 
                     msg_stop = {"type": "message_stop"}
                     self.wfile.write(f"event: message_stop\ndata: {json.dumps(msg_stop)}\n\n".encode("utf-8"))
                     self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return                      # client disconnected; stop paying for the stream
             except urllib.error.HTTPError as e:
                 err_text = e.read().decode("utf-8", errors="ignore")
                 self.send_anthropic_error(e.code, "api_error", f"Gemini API Error ({e.code}): {err_text}", headers_sent=headers_sent)
             except Exception as e:
                 self.send_anthropic_error(500, "api_error", f"Gemini Gateway Error: {e}", headers_sent=headers_sent)
+        else:
+            # There was no non-streaming branch: the handler returned without writing
+            # any response, so a stream:false caller waited until its own timeout.
+            self.send_anthropic_error(
+                400, "invalid_request_error",
+                "The Gemini route only supports streaming requests (stream: true).")
 
     # -------------------------------------------------------------------------
     # Route 3: Direct Anthropic Forwarding with OT-ACR
@@ -466,27 +570,7 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
                 headers[h] = v
 
         upstream_req = urllib.request.Request(target_url, data=payload_bytes, headers=headers, method="POST")
-
-        try:
-            with open_with_retry(upstream_req, timeout=300) as resp:
-                self.send_response(resp.status)
-                for key, value in resp.getheaders():
-                    if key.lower() not in ("transfer-encoding", "connection"):
-                        self.send_header(key, value)
-                self.send_header("Connection", "close")
-                self.end_headers()
-
-                while True:
-                    chunk = resp.read(4096)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="ignore")
-            self.send_anthropic_error(e.code, "api_error", f"Anthropic Upstream Error: {err_body}")
-        except Exception as e:
-            self.send_anthropic_error(500, "api_error", f"Anthropic Connection Error: {e}")
+        self.relay(upstream_req, "Anthropic")
 
 def main():
     parser = argparse.ArgumentParser(description="Claude Cortex Universal Gateway Proxy v3.0")
@@ -496,13 +580,13 @@ def main():
 
     server = ThreadingHTTPServer((args.host, args.port), CortexGatewayHandler)
     prov = get_active_provider_config()
-    print(f"=================================================================")
-    print(f"Claude Cortex Universal Gateway Proxy v3.0 [Active]")
+    print("=================================================================")
+    print("Claude Cortex Universal Gateway Proxy v3.0 [Active]")
     print(f"Listening on: http://{args.host}:{args.port}")
     print(f"Active Upstream Provider: {prov.get('name', 'OAuth')}")
-    print(f"OT-ACR Token Optimization: Active")
-    print(f"Anti-Stall Watchdog: Enabled")
-    print(f"=================================================================")
+    print("OT-ACR Token Optimization: Active")
+    print("Anti-Stall Watchdog: Enabled")
+    print("=================================================================")
 
     try:
         server.serve_forever()

@@ -63,6 +63,84 @@ def register_desktop_mcp(cfg_path, command, script):
     return True
 
 
+def merge_settings(src_path, dest_path):
+    """Add Cortex's hooks and defaults to the user's settings.json without losing theirs.
+
+    The old code treated ANY failure (a trailing comma, a BOM, a half-written file)
+    as permission to copy Cortex's file over the user's - discarding their
+    permissions, environment, MCP servers and hooks with no message. And on valid
+    JSON it did a shallow ``dict.update``, replacing the user's whole ``hooks`` object
+    and their model/theme/effort. Now:
+      * an unreadable existing file is left exactly as it is, with instructions;
+      * the user's values win; Cortex only fills in keys they have not set;
+      * hooks are merged per event, adding Cortex's commands if not already present;
+      * a backup is taken and the write is atomic.
+    Returns True if the file was written.
+    """
+    try:
+        with open(src_path, "r", encoding="utf-8-sig") as f:
+            ours = json.load(f)
+    except (OSError, ValueError) as exc:
+        print(f"  ! Could not read Cortex's settings ({exc}); settings.json not changed.")
+        return False
+
+    if not dest_path.exists():
+        shutil.copy2(src_path, dest_path)
+        return True
+
+    try:
+        with open(dest_path, "r", encoding="utf-8-sig") as f:   # tolerate a BOM
+            theirs = json.load(f)
+        if not isinstance(theirs, dict):
+            raise ValueError("top level is not an object")
+    except (OSError, ValueError) as exc:
+        print(f"  ! Left {dest_path} untouched: it could not be parsed ({exc}).")
+        print(f"    Merge the 'hooks' from {src_path} into it by hand.")
+        return False
+
+    for key, value in ours.items():
+        if key != "hooks":
+            theirs.setdefault(key, value)
+
+    their_hooks = theirs.get("hooks")
+    if their_hooks is not None and not isinstance(their_hooks, dict):
+        print(f"  ! Left {dest_path} untouched: its 'hooks' is not an object.")
+        return False
+    their_hooks = theirs.setdefault("hooks", {})
+    for event, entries in (ours.get("hooks") or {}).items():
+        existing = their_hooks.setdefault(event, [])
+        if not isinstance(existing, list):
+            print(f"  ! Skipped hook event '{event}': yours is not a list.")
+            continue
+        have = {h.get("command") for e in existing if isinstance(e, dict)
+                for h in (e.get("hooks") or []) if isinstance(h, dict)}
+        for entry in entries:
+            commands = {h.get("command") for h in (entry.get("hooks") or []) if isinstance(h, dict)}
+            if not commands & have:
+                existing.append(entry)
+            elif "matcher" in entry:
+                # Already installed by an earlier version: bring ITS matcher up to
+                # date (the guard used to match only "Bash", so PowerShell was never
+                # guarded) without touching anything of the user's.
+                for e in existing:
+                    mine = {h.get("command") for h in (e.get("hooks") or []) if isinstance(h, dict)} \
+                        if isinstance(e, dict) else set()
+                    if mine & commands:
+                        e["matcher"] = entry["matcher"]
+
+    try:
+        shutil.copy2(dest_path, str(dest_path) + ".cortex-install.bak")
+        tmp = str(dest_path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(theirs, f, indent=2)
+        os.replace(tmp, dest_path)
+    except OSError as exc:
+        print(f"  ! Could not update {dest_path}: {exc}")
+        return False
+    print(f"  ✓ Merged Cortex hooks into {dest_path} (backup: settings.json.cortex-install.bak)")
+    return True
+
+
 def print_header(title):
     print("=" * 70)
     print(f"          {title}")
@@ -242,15 +320,25 @@ def main():
     preserved = False
     for cand in detected_official:
         if cand.is_file() and "claude.real" not in cand.name:
+            # Copy to a temp name and replace, so a failed copy (disk full, an
+            # antivirus lock) never leaves a truncated claude.real that a later run
+            # mistakes for a good one and the wrapper then execs. A good binary
+            # preserved by an earlier install is never deleted on failure.
+            tmp_target = real_binary_target.with_name(real_binary_target.name + ".tmp")
             try:
-                shutil.copy2(cand, real_binary_target)
+                shutil.copy2(cand, tmp_target)
                 if not is_windows:
-                    real_binary_target.chmod(0o755)
+                    tmp_target.chmod(0o755)
+                os.replace(tmp_target, real_binary_target)
                 print(f"  ✓ Preserved official binary to: {real_binary_target}")
                 preserved = True
                 break
-            except Exception:
-                pass
+            except OSError as exc:
+                print(f"  ! Could not preserve {cand}: {exc}")
+                try:
+                    tmp_target.unlink()
+                except OSError:
+                    pass
 
     if not preserved and not real_binary_target.exists():
         print("  Downloading official Claude binary from Anthropic CDN...")
@@ -268,25 +356,12 @@ def main():
         except Exception as e:
             print(f"  ⚠ Note on binary download: {e}")
 
-    # 4. Clean removal of conflicting official installation artifacts
-    print("\n[4/7] Cleaning previous installation residue...")
-    downloads_dir = claude_dir / "downloads"
-    if downloads_dir.exists():
-        try:
-            shutil.rmtree(downloads_dir)
-            print(f"  ✓ Cleaned official installer download cache ({downloads_dir})")
-        except Exception:
-            pass
-
-    if is_windows:
-        local_app_claude = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local"))) / "Programs" / "claude" / "claude.exe"
-        if local_app_claude.exists() and local_app_claude != real_binary_target:
-            try:
-                bak = local_app_claude.with_suffix(".exe.bak")
-                local_app_claude.rename(bak)
-                print(f"  ✓ Relocated conflicting official binary to {bak}")
-            except Exception:
-                pass
+    # 4. Nothing to clean. This step used to delete ~/.claude/downloads and RENAME the
+    # official %LOCALAPPDATA%\Programs\claude\claude.exe to .exe.bak - moving aside the
+    # user's working Claude Code, which is exactly the failure the README and HANDOVER
+    # say the installer never causes. Cortex preserves a COPY (step 3) and leaves
+    # the official installation exactly where it is.
+    print("\n[4/7] Leaving the official Claude Code installation untouched.")
 
     # 5. Install Claude Cortex components
     print("\n[5/7] Installing Claude Cortex wrappers, rules & cognitive engines...")
@@ -354,27 +429,24 @@ def main():
         if src_f.exists():
             shutil.copytree(src_f, dest_f, dirs_exist_ok=True)
 
+    # CLAUDE.md is the user's own global memory. Never overwrite it: if there is
+    # already one that differs, ship ours beside it and say how to include it.
     claude_md = script_dir / "config" / "CLAUDE.md"
     if claude_md.exists():
-        shutil.copy2(claude_md, claude_dir / "CLAUDE.md")
+        user_md = claude_dir / "CLAUDE.md"
+        if not user_md.exists():
+            shutil.copy2(claude_md, user_md)
+        elif user_md.read_bytes() != claude_md.read_bytes():
+            shutil.copy2(claude_md, claude_dir / "CLAUDE.cortex.md")
+            print("  ! You already have ~/.claude/CLAUDE.md, so it was left alone.")
+            print("    Cortex's instructions are in ~/.claude/CLAUDE.cortex.md; add the line")
+            print("    @CLAUDE.cortex.md to your CLAUDE.md to include them.")
 
     # Merge settings.json
     src_settings = script_dir / "config" / "settings.json"
     dest_settings = claude_dir / "settings.json"
     if src_settings.exists():
-        if dest_settings.exists():
-            try:
-                with open(dest_settings, "r", encoding="utf-8") as f:
-                    orig_cfg = json.load(f)
-                with open(src_settings, "r", encoding="utf-8") as f:
-                    new_cfg = json.load(f)
-                orig_cfg.update(new_cfg)
-                with open(dest_settings, "w", encoding="utf-8") as f:
-                    json.dump(orig_cfg, f, indent=2)
-            except Exception:
-                shutil.copy2(src_settings, dest_settings)
-        else:
-            shutil.copy2(src_settings, dest_settings)
+        merge_settings(src_settings, dest_settings)
 
     print("  ✓ Installed Core Cognition rules, Memory Palace, Dream Simulator & Skills")
 
@@ -419,15 +491,25 @@ def main():
         dst_item = pdir / s_item
         if src_item.exists() and not dst_item.exists():
             try:
-                if is_windows:
+                # settings.json is COPIED, never linked: Claude Code writes it when
+                # you change /config or /model, and through a link those writes
+                # either leak into every other profile or are lost (see profiles.py).
+                if s_item == "settings.json":
+                    shutil.copy2(src_item, dst_item)
+                elif is_windows:
                     if src_item.is_dir():
-                        import subprocess
-                        subprocess.run(["cmd", "/c", "mklink", "/J", str(dst_item), str(src_item)], capture_output=True)
+                        # A junction needs no privilege. The old `mklink /J` call never
+                        # checked its result, so when it failed nothing raised, the
+                        # copy fallback below never ran, and the profile silently
+                        # lacked the shared directory while the installer reported
+                        # "full data synchronization".
+                        import _winapi
+                        _winapi.CreateJunction(str(src_item), str(dst_item))
                     else:
                         shutil.copy2(src_item, dst_item)
                 else:
                     os.symlink(src_item, dst_item)
-            except Exception:
+            except (OSError, ImportError, AttributeError):
                 if src_item.is_dir():
                     shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
                 else:
@@ -449,32 +531,16 @@ def main():
         except Exception as e:
             print(f"  ⚠ Registry PATH update note: {e}")
 
-        # Multi-IDE Detection & Configuration on Windows
+        # IDE integration is deliberately NOT done here. This installer used to set
+        # claudeCode.claudeProcessWrapper to claude.cmd, but the extension calls a
+        # wrapper as `wrapper <real-binary> [args...]` and claude.cmd treats its first
+        # argument as a profile or command - so the IDE integration was broken after
+        # install (and a process wrapper also disables the extension's permission-mode
+        # resolution). `cc ide apply` sets environment variables instead, which is
+        # the supported mechanism, preserves the user's settings.json, and refuses to
+        # rewrite a file it cannot parse.
         app_data = os.environ.get("APPDATA", str(home / "AppData" / "Roaming"))
-        wrapper_cmd = str(bin_dir / "claude.cmd")
-
-        ide_targets_win = [
-            ("VS Code", Path(app_data) / "Code" / "User" / "settings.json", "code.cmd"),
-            ("Google Antigravity", Path(app_data) / "Antigravity" / "User" / "settings.json", "antigravity.cmd"),
-            ("Cursor", Path(app_data) / "Cursor" / "User" / "settings.json", "cursor.cmd"),
-            ("VSCodium", Path(app_data) / "VSCodium" / "User" / "settings.json", "codium.cmd"),
-            ("Windsurf", Path(app_data) / "Windsurf" / "User" / "settings.json", "windsurf.cmd"),
-        ]
-
-        for ide_name, s_file, ide_cli in ide_targets_win:
-            if s_file.parent.exists() or s_file.exists():
-                s_file.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    data = {}
-                    if s_file.exists():
-                        with open(s_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                    data["claudeCode.claudeProcessWrapper"] = wrapper_cmd
-                    with open(s_file, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=4)
-                    print(f"  ✓ Configured Claude Code process wrapper for {ide_name}")
-                except Exception:
-                    pass
+        print("  - IDE integration: run `cc ide check`, then `cc ide apply --yes`.")
 
         # Claude Desktop MCP & Profiles on Windows
         desktop_dirs_win = [
@@ -502,35 +568,8 @@ def main():
                 except Exception:
                     pass
 
-        # Multi-IDE Detection on Linux / macOS
-        wrapper_sh = str(bin_dir / "claude")
-        ide_targets_posix = [
-            ("VS Code", home / ".config" / "Code" / "User" / "settings.json", "code"),
-            ("VS Code (macOS)", home / "Library" / "Application Support" / "Code" / "User" / "settings.json", "code"),
-            ("Google Antigravity", home / ".config" / "Antigravity" / "User" / "settings.json", "antigravity"),
-            ("Google Antigravity (macOS)", home / "Library" / "Application Support" / "Antigravity" / "User" / "settings.json", "antigravity"),
-            ("Cursor", home / ".config" / "Cursor" / "User" / "settings.json", "cursor"),
-            ("Cursor (macOS)", home / "Library" / "Application Support" / "Cursor" / "User" / "settings.json", "cursor"),
-            ("VSCodium", home / ".config" / "VSCodium" / "User" / "settings.json", "codium"),
-            ("VSCodium (macOS)", home / "Library" / "Application Support" / "VSCodium" / "User" / "settings.json", "codium"),
-            ("Windsurf", home / ".config" / "Windsurf" / "User" / "settings.json", "windsurf"),
-            ("Windsurf (macOS)", home / "Library" / "Application Support" / "Windsurf" / "User" / "settings.json", "windsurf"),
-        ]
-
-        for ide_name, s_file, ide_cli in ide_targets_posix:
-            if s_file.parent.exists() or s_file.exists():
-                s_file.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    data = {}
-                    if s_file.exists():
-                        with open(s_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                    data["claudeCode.claudeProcessWrapper"] = wrapper_sh
-                    with open(s_file, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=4)
-                    print(f"  ✓ Configured Claude Code process wrapper for {ide_name}")
-                except Exception:
-                    pass
+        # IDE integration: see the note in the Windows branch - use `cc ide apply`.
+        print("  - IDE integration: run `cc ide check`, then `cc ide apply --yes`.")
 
         # Claude Desktop MCP Integration on Linux / macOS
         desktop_dirs_posix = [
@@ -548,18 +587,15 @@ def main():
                     print(f"  ✓ Registered Cortex MCP tools in: {cfg_p}")
 
     print_header("Installation Complete! Claude Cortex is Ready Everywhere.")
-    print("\nAccessible from:")
-    print("  • Terminal / CMD / PowerShell: claude, claude -ws, claude -vl, claude continue")
-    print("  • VS Code Extension:           Native extension auto-routed through wrapper")
-    print("  • Claude Desktop App:          claude desktop ws, claude desktop vl")
-    print("\nKey Commands:")
-    print("  claude continue        Auto-check capacity across all accounts and resume session")
-    print("  claude switch [prof]   Switch active default profile")
-    print("  claude status / quota  Display real-time capacity and rate-limit countdowns")
-    print("  claude -t / --turbo    High-speed output with minimal token consumption")
-    print("  claude palace          Inspect Cognitive Memory Palace")
-    print("  claude dream           Simulate counterfactual edge cases & stress-test code")
-    print("  claude docs            View comprehensive Cortex documentation")
+    print("\nGet started:")
+    print("  cc doctor                  Check the install and your Claude Code binary")
+    print("  cc profile add <name>      Create a profile, then: cc login <name>")
+    print("  cc status                  Per-profile capacity (unknown stays unknown)")
+    print("  cc continue                Resume the last conversation on a profile with room")
+    print("  cc ide check | apply       Point IDE extensions at a profile (no files modified)")
+    print("  cc palace | remember | recall   Project memory")
+    print("  cc analyze <path>          Static risk analysis of source code")
+    print("  cc --help                  Everything else")
     print("=" * 70)
 
 if __name__ == "__main__":

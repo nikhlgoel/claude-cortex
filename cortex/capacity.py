@@ -15,7 +15,6 @@ none exist, the caller is told to choose explicitly.
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timezone
 
 from . import jsonfile, profiles

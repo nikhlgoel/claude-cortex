@@ -12,7 +12,7 @@ import os
 import shutil
 
 from . import binary, jsonfile, profiles
-from .paths import (bin_dir, canonical_dir, profile_dir, profiles_dir,
+from .paths import (profile_dir, profiles_dir,
                     securestorage_suffix, shared_claude_dir)
 
 OK = "ok"

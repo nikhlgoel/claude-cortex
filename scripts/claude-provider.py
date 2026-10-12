@@ -39,7 +39,7 @@ DEFAULT_CONFIG = {
         },
         "openrouter": {
             "name": "OpenRouter.ai",
-            "type": "api_key",
+            "type": "openrouter",
             "api_key": "",
             "base_url": "https://openrouter.ai/api/v1",
             "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -86,6 +86,12 @@ def load_providers():
     for k, v in DEFAULT_CONFIG["providers"].items():
         if k not in data.get("providers", {}):
             data.setdefault("providers", {})[k] = copy.deepcopy(v)
+    # Migrate: the OpenRouter entry used to ship with the generic type "api_key",
+    # which the gateway routed to api.anthropic.com. Files written by older versions
+    # keep that value (only missing providers are back-filled above).
+    openrouter = data.get("providers", {}).get("openrouter")
+    if isinstance(openrouter, dict) and openrouter.get("type") == "api_key":
+        openrouter["type"] = "openrouter"
     return data
 
 
@@ -393,7 +399,7 @@ def main():
                 print(f"✓ Configured API key for {target.upper()}: {masked}")
         elif param1 and param2:
             # First is key, second is model
-            if "/" in param1 and not ("/" in param2):
+            if "/" in param1 and "/" not in param2:
                 param1, param2 = param2, param1
             cfg["providers"][target]["api_key"] = param1
             cfg["providers"][target]["model"] = param2

@@ -43,6 +43,10 @@ VALID_NAME = "abcdefghijklmnopqrstuvwxyz0123456789_-"
 SYNCED_ITEMS = [
     "projects", "file-history", "history.jsonl", "commands", "skills",
     "rules", "plugins", "mcp-configs", "ide", "palace", "agents",
+    # The user's global instructions. CLAUDE_CONFIG_DIR relocates every ~/.claude
+    # path, so without this a synced profile never saw the global CLAUDE.md (and
+    # with it Cortex's own instructions). Isolated profiles share nothing, by design.
+    "CLAUDE.md",
 ]
 
 
@@ -136,7 +140,14 @@ def _link(src: str, dst: str) -> None:
         if os.path.isdir(src):
             os.makedirs(dst, exist_ok=True)
         else:
-            shutil.copy2(src, dst)
+            # A hard link first: unlike a symlink it needs no privilege on Windows
+            # (same volume), and it keeps the file shared. Only then fall back to a
+            # copy - which is created once and never refreshed, so a later edit to
+            # either side does not silently overwrite the other.
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
     except OSError:
         pass
 

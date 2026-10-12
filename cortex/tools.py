@@ -127,8 +127,14 @@ def run(command, args):
         print("    Reinstall Cortex, or run it from the repository checkout.",
               file=sys.stderr)
         return 1
+    # PYTHONUTF8 for the child: several tools print symbols (check marks, room
+    # icons), and under a legacy Windows code page the first one raised
+    # UnicodeEncodeError - `cc palace` failed on every call. Python writes to a real
+    # console through the wide-character API regardless, so this only changes what a
+    # pipe or file receives.
+    env = dict(os.environ, PYTHONUTF8="1")
     try:
-        return subprocess.run([sys.executable, script] + prefix + list(args)).returncode
+        return subprocess.run([sys.executable, script] + prefix + list(args), env=env).returncode
     except KeyboardInterrupt:
         return 130
     except (OSError, subprocess.SubprocessError) as exc:

@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 
-from . import binary, jsonfile, profiles
+from . import jsonfile, profiles
 from .paths import profile_dir
 
 SERVER_NAME = "cortex"

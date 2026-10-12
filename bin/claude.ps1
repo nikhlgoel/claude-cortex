@@ -7,11 +7,13 @@
 # profile management, no doctor, and a different environment table.
 # ==============================================================================
 
-[CmdletBinding()]
-param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$ScriptArgs
-)
+# Deliberately NO [CmdletBinding()] and NO param block. Either one gives the script
+# PowerShell's common parameters, and PowerShell binds ABBREVIATIONS to them: `-p`
+# became -PipelineVariable (swallowing the next argument), `-d` became -Debug and
+# `-v` became -Verbose. So `cc -p "prompt"` - Claude Code's main non-interactive
+# flag - silently lost its prompt on Windows. `$args` receives every argument
+# untouched.
+[string[]]$ScriptArgs = $args
 
 $ErrorActionPreference = "Stop"
 

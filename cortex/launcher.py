@@ -28,7 +28,6 @@ import subprocess
 import sys
 
 from . import binary, profiles
-from .paths import profile_dir
 
 # Model IDs are Anthropic's exact strings. The short flags (-s, -o, -H) keep their
 # long-standing targets so existing habits do not change under anyone; the newer

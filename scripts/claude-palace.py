@@ -13,6 +13,7 @@ import re
 import argparse
 import hashlib
 import contextlib
+import time
 from datetime import datetime, timezone
 
 ROOMS = {
@@ -55,10 +56,77 @@ STOPWORDS = {
 
 _LOCK_DEPTH = 0
 _LOCK_FD = None
+LOCK_TIMEOUT = 10.0
+
+
+def _utf8_stdio():
+    """Make printing the palace's emoji safe on a legacy console code page.
+
+    Under the default Windows locale (cp1252) the very first ``print`` of a room
+    icon raised UnicodeEncodeError, so every palace command - and the MCP
+    remember/recall tools that spawn this script - failed before writing anything.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+def _first_line(text, limit):
+    """First non-empty line of ``text`` (or ''), never raising on empty input."""
+    lines = (text or "").strip().splitlines()
+    return lines[0][:limit] if lines else ""
+
+
+def _try_lock(fd):
+    """One non-blocking attempt at an exclusive lock. True if acquired."""
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        import msvcrt
+        fd.seek(0)
+        msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+        return True
+    except (ImportError, AttributeError):
+        return None        # no locking primitive on this platform
+    except OSError:
+        return False       # someone else holds it
+
+
+def _unlock(fd):
+    try:
+        import fcntl
+        fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        return
+    except ImportError:
+        pass
+    except OSError:
+        return
+    try:
+        import msvcrt
+        fd.seek(0)
+        msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+    except (ImportError, OSError):
+        pass
+
 
 @contextlib.contextmanager
 def palace_lock(palace_dir):
-    """Cooperative re-entrant cross-process file lock for memory palace writes."""
+    """Cooperative re-entrant cross-process file lock for memory palace writes.
+
+    POSIX uses flock; Windows uses msvcrt.locking. The old code imported only
+    fcntl and swallowed the ImportError, so on Windows the "lock" silently did
+    nothing and concurrent writers (the hook, the MCP server, the CLI) could
+    overwrite each other's index updates. Acquisition polls against a deadline
+    rather than blocking forever; if it times out it warns and proceeds, because a
+    stuck lock must never hang a hook.
+    """
     global _LOCK_DEPTH, _LOCK_FD
     os.makedirs(palace_dir, exist_ok=True)
     lock_file = os.path.join(palace_dir, ".palace.lock")
@@ -71,12 +139,21 @@ def palace_lock(palace_dir):
             _LOCK_DEPTH -= 1
         return
 
-    fd = open(lock_file, "a")
-    try:
-        import fcntl
-        fcntl.flock(fd.fileno(), fcntl.LOCK_EX)
-    except (ImportError, AttributeError, OSError):
-        pass
+    fd = open(lock_file, "a", encoding="utf-8")
+    deadline = time.monotonic() + LOCK_TIMEOUT
+    held = False
+    while True:
+        state = _try_lock(fd)
+        if state is None:                  # platform has no locking at all
+            break
+        if state:
+            held = True
+            break
+        if time.monotonic() >= deadline:
+            print("palace: timed out waiting for another process's lock; "
+                  "continuing without it", file=sys.stderr)
+            break
+        time.sleep(0.05)
 
     _LOCK_FD = fd
     _LOCK_DEPTH = 1
@@ -84,14 +161,11 @@ def palace_lock(palace_dir):
         yield
     finally:
         _LOCK_DEPTH = 0
-        try:
-            import fcntl
-            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
-        except Exception:
-            pass
+        if held:
+            _unlock(fd)
         try:
             fd.close()
-        except Exception:
+        except OSError:
             pass
         _LOCK_FD = None
 
@@ -99,7 +173,9 @@ def find_palace_dir():
     cwd = os.getcwd()
     try:
         import subprocess
-        git_root = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], stderr=subprocess.DEVNULL).decode().strip()
+        git_root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], stderr=subprocess.DEVNULL,
+            timeout=5).decode("utf-8", errors="replace").strip()
         if git_root:
             local_palace = os.path.join(git_root, ".claude", "palace")
             if os.path.exists(local_palace):
@@ -127,16 +203,28 @@ def load_index(palace_dir):
     }
     if os.path.exists(index_file):
         try:
-            with open(index_file) as f:
+            with open(index_file, encoding="utf-8") as f:
                 loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    idx.update(loaded)
-                    idx.setdefault("stats", {"total_memories": 0, "total_tags": 0})
-                    idx.setdefault("tag_index", {})
-                    idx.setdefault("memories", {})
-                    idx.setdefault("rooms", {})
-        except Exception:
-            pass
+            if not isinstance(loaded, dict):
+                raise ValueError("top level is not an object")
+            idx.update(loaded)
+            idx.setdefault("stats", {"total_memories": 0, "total_tags": 0})
+            idx.setdefault("tag_index", {})
+            idx.setdefault("memories", {})
+            idx.setdefault("rooms", {})
+        except (OSError, ValueError) as exc:
+            # Returning an empty index here is only safe if nothing then saves it:
+            # the next `remember` would atomically replace index.json with the empty
+            # one and erase every entry, tag and room count. Move the unreadable
+            # file aside first, under the lock, and say so.
+            with palace_lock(palace_dir):
+                bad = f"{index_file}.corrupt-{int(time.time())}"
+                try:
+                    os.replace(index_file, bad)
+                except OSError:
+                    bad = "(could not move it aside)"
+            print(f"palace: index.json unreadable ({exc}); kept as {bad}, "
+                  f"starting a fresh index", file=sys.stderr)
     return idx
 
 def save_index(palace_dir, idx):
@@ -146,32 +234,44 @@ def save_index(palace_dir, idx):
         idx["stats"]["total_memories"] = len(idx.get("memories", {}))
         idx["stats"]["total_tags"] = len(idx.get("tag_index", {}))
         tmp_file = f"{index_file}.tmp.{os.getpid()}"
-        with open(tmp_file, "w") as f:
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(idx, f, indent=2)
         os.replace(tmp_file, index_file)
 
 def ensure_palace_structure(palace_dir):
     rooms_dir = os.path.join(palace_dir, "rooms")
     os.makedirs(rooms_dir, exist_ok=True)
-    idx = load_index(palace_dir)
 
-    for rkey, rinfo in ROOMS.items():
-        rpath = os.path.join(rooms_dir, rinfo["file"])
-        if not os.path.exists(rpath):
-            header = f"# {rinfo['icon']} {rinfo['name']}\n\n> {rinfo['desc']}\n\n---\n"
-            with open(rpath, "w") as f:
-                f.write(header)
+    # The whole load -> modify -> save runs under the (re-entrant) lock. It used to
+    # load outside it, so a concurrent `remember` could save a new memory between
+    # this function's load and its save, and the stale snapshot then overwrote it.
+    with palace_lock(palace_dir):
+        index_path = os.path.join(palace_dir, "index.json")
+        changed = not os.path.exists(index_path)
+        idx = load_index(palace_dir)
 
-        if rkey not in idx["rooms"]:
-            idx["rooms"][rkey] = {
-                "name": rinfo["name"],
-                "file": f"rooms/{rinfo['file']}",
-                "entries_count": 0,
-                "tags": [],
-                "last_updated": datetime.now(timezone.utc).isoformat()
-            }
+        for rkey, rinfo in ROOMS.items():
+            rpath = os.path.join(rooms_dir, rinfo["file"])
+            if not os.path.exists(rpath):
+                header = f"# {rinfo['icon']} {rinfo['name']}\n\n> {rinfo['desc']}\n\n---\n"
+                with open(rpath, "w", encoding="utf-8") as f:
+                    f.write(header)
+                changed = True
 
-    save_index(palace_dir, idx)
+            if rkey not in idx["rooms"]:
+                idx["rooms"][rkey] = {
+                    "name": rinfo["name"],
+                    "file": f"rooms/{rinfo['file']}",
+                    "entries_count": 0,
+                    "tags": [],
+                    "last_updated": datetime.now(timezone.utc).isoformat()
+                }
+                changed = True
+
+        # Read-only commands (recall, status) call this too; only rewrite the index
+        # when something was actually created, so reading never races a writer.
+        if changed or not os.path.exists(index_path):
+            save_index(palace_dir, idx)
     return palace_dir
 
 def tokenize(text):
@@ -193,6 +293,9 @@ def resolve_room(room_query):
     return None
 
 def remember(palace_dir, room_key, title, content, tags=None):
+    if not (content or "").strip():
+        print("palace: nothing to remember - the content is empty.", file=sys.stderr)
+        return None
     ensure_palace_structure(palace_dir)
 
     with palace_lock(palace_dir):
@@ -208,14 +311,21 @@ def remember(palace_dir, room_key, title, content, tags=None):
         rpath = os.path.join(palace_dir, "rooms", rinfo["file"])
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-        # Deduplication Guard: Check if identical or near-identical memory exists in this room
+        # Deduplication guard: a memory is a duplicate only if BOTH the title and
+        # the content (its first line, as stored in the summary) already exist in
+        # this room. The earlier version compared titles alone, so recording a
+        # changed decision under an unchanged title ("pool size 10" -> "pool size
+        # 50 after the outage") was discarded and reported as "already recorded" -
+        # the model was told its new information was safe when it had been lost.
         title_clean = title.strip().lower()
-        first_line_clean = content.strip().splitlines()[0][:100].lower()
+        summary_clean = _first_line(content, 150).strip().lower()
         for mid, mdata in idx.get("memories", {}).items():
             if mdata.get("room") == room_key:
                 exist_title = mdata.get("title", "").strip().lower()
                 exist_summary = mdata.get("summary", "").strip().lower()
-                if exist_title == title_clean or (len(title_clean) > 8 and title_clean in exist_title):
+                same_title = exist_title == title_clean or (
+                    len(title_clean) > 8 and title_clean in exist_title)
+                if same_title and exist_summary == summary_clean:
                     print(f"ℹ Memory already recorded in {rinfo['icon']} {rinfo['name']} as [{mid}]: '{title}'. Skipped duplicate.")
                     return mid
 
@@ -242,7 +352,7 @@ def remember(palace_dir, room_key, title, content, tags=None):
         entry += f"**Tags:** `{tag_header}`\n\n"
         entry += f"{content.strip()}\n"
 
-        with open(rpath, "a") as f:
+        with open(rpath, "a", encoding="utf-8") as f:
             f.write(entry)
 
         # Update index
@@ -351,7 +461,7 @@ def recall(palace_dir, query, room=None, auto_mode=False, max_results=3):
         rpath = os.path.join(palace_dir, "rooms", rinfo.get("file", ""))
         full_text = ""
         if os.path.exists(rpath):
-            with open(rpath) as f:
+            with open(rpath, encoding="utf-8") as f:
                 content = f.read()
             pattern = re.compile(rf'(### .*?<!-- id:{mid} -->.*?)(?=\n### |\Z)', re.DOTALL)
             m = pattern.search(content)
@@ -406,11 +516,11 @@ def prune(palace_dir, mem_id=None, tag=None):
                 rinfo = ROOMS.get(room_key, {})
                 rpath = os.path.join(palace_dir, "rooms", rinfo.get("file", ""))
                 if os.path.exists(rpath):
-                    with open(rpath) as f:
+                    with open(rpath, encoding="utf-8") as f:
                         content = f.read()
                     pattern = re.compile(rf'\n### .*?<!-- id:{mem_id} -->.*?(?=\n### |\Z)', re.DOTALL)
                     clean_content = pattern.sub('', content)
-                    with open(rpath, "w") as f:
+                    with open(rpath, "w", encoding="utf-8") as f:
                         f.write(clean_content)
                 removed += 1
                 print(f"✓ Pruned memory [{mem_id}] ({mdata.get('title')})")
@@ -444,11 +554,10 @@ def show_status(palace_dir):
         r_prefix = "└── " if is_last_room else "├── "
         child_indent = "    " if is_last_room else "│   "
 
-        rmeta = idx["rooms"].get(rkey, {})
         rpath = os.path.join(palace_dir, "rooms", rinfo["file"])
         line_count = 0
         if os.path.exists(rpath):
-            with open(rpath) as f:
+            with open(rpath, encoding="utf-8") as f:
                 line_count = len(f.readlines())
 
         mems_in_room = room_mems.get(rkey, [])
@@ -479,7 +588,7 @@ def show_status(palace_dir):
             print(f"  {child_indent}└── No active memories recorded yet")
 
         if not is_last_room:
-            print(f"  │")
+            print("  │")
 
     print("======================================================================")
 
@@ -495,6 +604,7 @@ def main():
     parser.add_argument("--id", help="Memory ID to prune")
     parser.add_argument("--path", help="Custom palace directory")
     args, unknown = parser.parse_known_args()
+    _utf8_stdio()
 
     palace_dir = args.path or find_palace_dir()
 
@@ -507,12 +617,13 @@ def main():
         room = args.room
         title = args.title
         content = args.content
+        # Titles are derived only AFTER the content is known to be non-empty. The
+        # old code took content.splitlines()[0] while parsing positionals, so
+        # `remember blueprint ""` raised IndexError before the usage check ran.
         if not room and unknown:
             room = unknown[0]
             if len(unknown) == 2:
                 content = unknown[1]
-                if not title:
-                    title = content.splitlines()[0][:60]
             elif len(unknown) > 2:
                 if not title:
                     title = unknown[1]
@@ -521,18 +632,16 @@ def main():
         elif room and not content and unknown:
             if len(unknown) == 1:
                 content = unknown[0]
-                if not title:
-                    title = content.splitlines()[0][:60]
             elif len(unknown) >= 2:
                 if not title:
                     title = unknown[0]
                 content = " ".join(unknown[1:])
 
-        if not room or not content:
+        if not room or not (content or "").strip():
             print("Usage: cc palace remember <room> <notes> OR cc palace remember --room <room> --title <title> --content <content> [--tags <tags>]")
             sys.exit(1)
         if not title:
-            title = content.splitlines()[0][:60]
+            title = _first_line(content, 60)
         remember(palace_dir, room, title, content, args.tags)
     elif args.action in ["recall", "search", "auto-recall"]:
         q = args.query or " ".join(unknown)
@@ -550,6 +659,7 @@ def main():
         prune(palace_dir, mem_id=mem_id)
     elif args.action == "consolidate":
         ensure_palace_structure(palace_dir)
+        save_index(palace_dir, load_index(palace_dir))   # refresh the stats/timestamp
         print(f"✓ Consolidated and indexed Memory Palace at: {palace_dir}")
 
 if __name__ == "__main__":

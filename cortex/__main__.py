@@ -13,7 +13,7 @@ import sys
 
 from . import capacity, doctor, ghidra, ide, integrity, launcher, mcp, models, profiles, tools
 from .profiles import CortexError
-from .paths import profile_dir, profiles_dir
+from .paths import profile_dir
 
 VERSION = "2.0.0"
 
@@ -389,6 +389,14 @@ def _run():
     actionable line rather than a stack trace. A traceback tells the operator
     nothing they can act on, and makes a routine problem look like corruption.
     """
+    # A legacy console code page cannot encode every character a command may print
+    # (profile names, paths, tool output). Replace rather than crash: a '?' in the
+    # output is better than a traceback that discards the whole result.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     try:
         return main()
     except CortexError as exc:

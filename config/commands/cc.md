@@ -10,7 +10,7 @@ Display available in-session and terminal commands, active profiles, and shortcu
 
 ## Instructions for Claude
 
-1. If subcommands were passed with arguments (e.g. `model`, `capacity`, `palace`, `test`), invoke the corresponding command.
+1. If subcommands were passed with arguments (e.g. `model`, `capacity`, `palace`), invoke the corresponding command.
 2. If no arguments were provided, display the Claude Cortex command index:
    ```text
    ======================================================================
@@ -25,15 +25,11 @@ Display available in-session and terminal commands, active profiles, and shortcu
      /palace [status|rooms]      Cognitive Memory Palace
      /remember <room> <note>     Deposit knowledge into palace room
      /recall <query>             Instant tag & keyword search
-     /dream                      Dream simulator & consolidation
+     /dream <concept>            Research-backed concept explorer
      /research <topic>           Frontier arXiv & SOTA testbench
-     /think <prompt>             Tri-Mind first-principles reasoning
      /update [check|apply]       Ecosystem updater
-     /test                       Run full test & benchmark suite
      /switch [profile]           Toggle active account
      /continue                   Auto-failover resume
      /clean                      Storage & cache cleanup
-     /docs                       Comprehensive user guide
-     /menu                       Interactive visual command palette
    ======================================================================
    ```

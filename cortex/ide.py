@@ -34,7 +34,7 @@ import os
 from pathlib import Path
 
 from . import jsonfile, profiles
-from .paths import canonical_dir, home, profile_dir
+from .paths import home, profile_dir
 
 # Directory name -> human label. Only IDEs that actually host the extension.
 KNOWN_IDES = {

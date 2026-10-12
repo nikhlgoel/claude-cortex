@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 
+from . import proc
 from .paths import canonical_dir
 
 REPO = "NationalSecurityAgency/ghidra"
@@ -186,11 +187,20 @@ def cmd_status(args):
     print(f"  image          : cortex-ghidra:{PINNED_REF}")
 
     if _docker_available():
-        result = subprocess.run(
-            ["docker", "images", "-q", f"cortex-ghidra:{PINNED_REF}"],
-            capture_output=True, text=True)
-        built = bool(result.stdout.strip())
-        print(f"  image built    : {'yes' if built else 'no (run: cc ghidra build)'}")
+        # A status query must never hang or lie. With Docker Desktop starting or
+        # wedged this call could block indefinitely, and with the daemon down it
+        # returned nothing - which printed "image built: no (run: cc ghidra build)",
+        # sending the user to a 15-minute build that could not help.
+        try:
+            result = proc.run(["docker", "images", "-q", f"cortex-ghidra:{PINNED_REF}"], timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            print("  docker         : not responding (is Docker Desktop running?)")
+        else:
+            if result.returncode != 0:
+                print("  docker         : daemon not reachable (start Docker Desktop)")
+            else:
+                built = bool(result.stdout.strip())
+                print(f"  image built    : {'yes' if built else 'no (run: cc ghidra build)'}")
     else:
         print("  docker         : not found")
 

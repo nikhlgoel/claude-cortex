@@ -71,6 +71,32 @@ def scripts_dir():
     return REPO / "scripts"
 
 
+def run_child(args, timeout, env=None):
+    """Run a child process with a real time bound and UTF-8 decoding.
+
+    Two Windows problems this avoids, both reproduced: (1) subprocess's timeout
+    does not bound a captured call when a grandchild holds the pipe (docker, git,
+    node shims), so a hung tool could hold the MCP server far past its timeout;
+    (2) ``text=True`` decodes with the console code page, so the palace's emoji
+    output raised UnicodeDecodeError and the remember/recall tools failed. The
+    child is also told to emit UTF-8 (PYTHONUTF8). Raises TimeoutExpired/OSError.
+    """
+    base = cortex_module_dir()
+    if base not in sys.path:
+        sys.path.insert(0, base)
+    from cortex import proc
+    child_env = dict(os.environ, PYTHONUTF8="1")
+    child_env.update(env or {})
+    return proc.run(args, timeout=timeout, env=child_env)
+
+
+def child_failed(exc, what):
+    """One consistent message for a child that timed out or could not start."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"{what} did not finish within {int(exc.timeout)}s and was stopped."
+    return f"{what} could not run: {exc}"
+
+
 # ---------------------------------------------------------------------------
 # Tools. Each returns a plain string; the protocol wrapping happens in
 # handle_call, so a tool never has to know about JSON-RPC.
@@ -79,13 +105,15 @@ def scripts_dir():
 def tool_account_status(_args):
     """Real capacity via the core, not a fabricated number."""
     core = cortex_module_dir()
-    result = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; sys.path.insert(0, sys.argv[1]); "
-         "from cortex import capacity; print(capacity.render())",
-         core],
-        capture_output=True, text=True, timeout=120,
-        env={**os.environ, "PYTHONPATH": core})
+    try:
+        result = run_child(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); "
+             "from cortex import capacity; print(capacity.render())",
+             core],
+            timeout=120, env={"PYTHONPATH": core})
+    except (OSError, subprocess.SubprocessError) as exc:
+        return child_failed(exc, "Capacity check")
     return result.stdout or result.stderr or "no output"
 
 
@@ -96,9 +124,10 @@ def tool_recall(args):
     script = scripts_dir() / "claude-palace.py"
     if not script.is_file():
         return "Memory palace is not installed."
-    result = subprocess.run(
-        [sys.executable, str(script), "recall", query],
-        capture_output=True, text=True, timeout=60)
+    try:
+        result = run_child([sys.executable, str(script), "recall", query], timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return child_failed(exc, "Memory recall")
     return result.stdout or result.stderr or f"No memories matching '{query}'."
 
 
@@ -111,11 +140,15 @@ def tool_remember(args):
     script = scripts_dir() / "claude-palace.py"
     if not script.is_file():
         return "Memory palace is not installed."
-    result = subprocess.run(
-        [sys.executable, str(script), "remember", "--room", room,
-         "--title", title, "--content", content],
-        capture_output=True, text=True, timeout=60)
-    return result.stdout or result.stderr or "stored"
+    try:
+        result = run_child([sys.executable, str(script), "remember", "--room", room,
+                            "--title", title, "--content", content], timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return child_failed(exc, "Memory store")
+    if result.returncode != 0:
+        # Do not tell the model "stored" when the palace refused or crashed.
+        return "NOT stored: " + (result.stderr or result.stdout or "the palace reported an error").strip()
+    return result.stdout or "stored"
 
 
 def tool_analyze_code_risks(args):
@@ -128,9 +161,10 @@ def tool_analyze_code_risks(args):
     script = scripts_dir() / "claude-analyze.py"
     if not script.is_file():
         return "The analyser is not installed."
-    result = subprocess.run(
-        [sys.executable, str(script), "--path", path],
-        capture_output=True, text=True, timeout=180)
+    try:
+        result = run_child([sys.executable, str(script), "--path", path], timeout=180)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return child_failed(exc, "Code analysis")
     return result.stdout or result.stderr or "no findings"
 
 
@@ -146,19 +180,30 @@ def tool_decompile_binary(args):
     core = cortex_module_dir()
     # Delegate to the same code path `cc ghidra analyze` uses, so there is one
     # implementation and the isolation guarantees are identical.
-    result = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; sys.path.insert(0, sys.argv[1]); "
-         "from cortex import ghidra; sys.exit(ghidra.main(['analyze', sys.argv[2]]))",
-         core, os.path.abspath(binary)],
-        capture_output=True, text=True, timeout=1200,
-        env={**os.environ, "PYTHONPATH": core})
+    try:
+        result = run_child(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); "
+             "from cortex import ghidra; sys.exit(ghidra.main(['analyze', sys.argv[2]]))",
+             core, os.path.abspath(binary)],
+            timeout=1200, env={"PYTHONPATH": core})
+    except (OSError, subprocess.SubprocessError) as exc:
+        return child_failed(exc, "Binary analysis")
 
     output = result.stdout or ""
-    if result.returncode != 0 and "docker" in (result.stdout + result.stderr).lower():
-        return ("Ghidra analysis needs the isolated image. Build it once with "
-                "'cc ghidra build' (about 15 minutes), then retry.\n\n"
-                + (result.stderr or "")[-400:])
+    combined = ((result.stdout or "") + (result.stderr or "")).lower()
+    if result.returncode != 0 and "docker" in combined:
+        # Say what is actually wrong. "Build the image" was returned for every
+        # docker-related failure, including a stopped daemon, which sent the model
+        # off to run a 15-minute build that could not help.
+        if "cannot connect to the docker daemon" in combined or "daemon" in combined and "running" in combined:
+            return ("Docker is installed but its daemon is not reachable. Start Docker "
+                    "Desktop and retry.\n\n" + (result.stderr or "")[-300:])
+        if "unable to find image" in combined or "no such image" in combined:
+            return ("Ghidra analysis needs the isolated image. Build it once with "
+                    "'cc ghidra build' (about 15 minutes), then retry.\n\n"
+                    + (result.stderr or "")[-400:])
+        return "Ghidra analysis failed:\n" + ((result.stderr or result.stdout or "")[-600:])
     # Return the capability report, which is the part worth reasoning over.
     marker = "capability report"
     index = output.find(marker)
@@ -178,12 +223,10 @@ def tool_evaluate_impact(args):
     if not script.is_file():
         return "The scorer is not installed. Reinstall Cortex."
     try:
-        result = subprocess.run(
-            [sys.executable, str(script), "--path", path, "--root", root],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=60)
+        result = run_child([sys.executable, str(script), "--path", path, "--root", root],
+                           timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:
-        return f"scorer failed to run: {exc}"
+        return child_failed(exc, "The scorer")
 
     try:
         data = json.loads(result.stdout)

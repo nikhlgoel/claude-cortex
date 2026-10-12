@@ -101,7 +101,7 @@ def cmd_save(args):
         "slug": directory.name,
         "date": time.strftime("%Y-%m-%d %H:%M"),
         "crux": args.crux or "",
-        "lenses": [l for l in (args.lenses or "").split(",") if l],
+        "lenses": [lens.strip() for lens in (args.lenses or "").split(",") if lens.strip()],
         "next_action": args.action or "",
         "files": {k: v for k, v in
                   (("exploration", exploration), ("research", research)) if v},

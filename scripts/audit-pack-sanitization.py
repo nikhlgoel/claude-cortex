@@ -42,7 +42,7 @@ DISALLOWED_PATTERNS = [
 ]
 
 # Excluded documentation or audit scripts from certain string checks
-AUDIT_SELF = os.path.basename(__file__)
+AUDIT_SELF = os.path.abspath(__file__)
 
 def audit_pack():
     print("======================================================================")
@@ -64,8 +64,11 @@ def audit_pack():
             file_path = os.path.join(root, f)
             rel_path = os.path.relpath(file_path, PACK_DIR)
 
-            # Skip the audit script itself for self-referential pattern strings
-            if f == AUDIT_SELF:
+            # Skip the audit script itself (it contains the patterns as strings). Compare
+            # the full path, not the basename: a basename match exempted ANY file with
+            # that name anywhere in the pack from the secret scan, which is a way to
+            # smuggle a leak past the gate.
+            if os.path.abspath(file_path) == AUDIT_SELF:
                 continue
 
             scanned_files += 1
@@ -79,7 +82,12 @@ def audit_pack():
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as fp:
                     content = fp.read()
-            except Exception as e:
+            except OSError as exc:
+                # A security gate must not fail open. An unreadable file (permission,
+                # a broken symlink, an over-long Windows path) used to be skipped
+                # silently, so the audit could still print "100% CLEAN" without ever
+                # having scanned it.
+                violations.append(f"[UNREADABLE] {rel_path}: {exc}")
                 continue
 
             # Check for secrets

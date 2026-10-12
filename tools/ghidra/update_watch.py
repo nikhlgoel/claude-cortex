@@ -139,16 +139,37 @@ def audit_tag(ref, baseline):
     workdir = tempfile.mkdtemp(prefix="ghidra-audit-")
     checkout = os.path.join(workdir, "ghidra")
     try:
-        clone = run(["git", "clone", "--depth", "1", "--branch", ref,
-                     "--single-branch",
-                     f"https://github.com/{REPO}.git", checkout], timeout=1800)
+        try:
+            clone = run(["git", "clone", "--depth", "1", "--branch", ref,
+                         "--single-branch",
+                         f"https://github.com/{REPO}.git", checkout], timeout=1800)
+        except subprocess.TimeoutExpired:
+            return None, "clone timed out"
         if clone.returncode != 0:
             return None, f"clone failed: {clone.stderr.strip()[:200]}"
 
         cmd = [sys.executable, AUDIT, checkout]
-        if baseline and os.path.exists(baseline):
+        use_baseline = bool(baseline and os.path.exists(baseline))
+        if use_baseline:
             cmd += ["--baseline", baseline]
-        result = run(cmd, timeout=1800)
+        try:
+            result = run(cmd, timeout=1800)
+        except subprocess.TimeoutExpired:
+            return None, "audit timed out"
+
+        # This is a supply-chain gate, so "the audit did not run" must never look
+        # like "the audit found nothing". audit.py exits 0 (clean) or 1 (the attack
+        # surface grew), and 2 for an unreadable baseline or checkout. A crash also
+        # exits 1 - with a traceback on stderr and the baseline-diff section missing -
+        # so the exit code alone cannot tell "grew" from "died".
+        if result.returncode not in (0, 1):
+            return None, f"audit did not run (exit {result.returncode}): {result.stderr.strip()[:200]}"
+        if "Traceback" in (result.stderr or ""):
+            return None, f"audit crashed: {result.stderr.strip()[-200:]}"
+        if not result.stdout.strip():
+            return None, "audit produced no output"
+        if use_baseline and "CHANGE SINCE BASELINE" not in result.stdout:
+            return None, "audit ran but did not produce its baseline comparison"
         return result.stdout, None
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
