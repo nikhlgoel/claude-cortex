@@ -54,6 +54,9 @@ class LocalRoute:
         self.active = 0
         self.last_activity = time.monotonic()
         self._lock = threading.Lock()
+        #: Callable that starts the model server; set by ``build``. None = never auto-start.
+        self.wake = None
+        self._wake_lock = threading.Lock()
 
     # ------------------------------------------------------------------ auth
 
@@ -111,6 +114,8 @@ class LocalRoute:
                 data = json.loads(resp.read().decode("utf-8"))
                 if isinstance(data.get("input_tokens"), int):
                     count = data["input_tokens"]
+        except urllib.error.HTTPError as exc:
+            exc.close()                   # e.g. a 404 from a build with no count endpoint
         except (urllib.error.URLError, OSError, ValueError):
             pass
         exact = count is not None
@@ -139,30 +144,66 @@ class LocalRoute:
         upstream connection, which makes llama-server abort the generation instead of
         finishing a response nobody will read.
         """
-        try:
-            with self.semaphore:
-                if cancel.is_set():
-                    return
-                with urllib.request.urlopen(self._request(f"{self.upstream}/v1/messages", payload),
-                                            timeout=1800) as resp:
-                    out.put(("open", resp.status, resp.headers.get("Content-Type", "application/json")))
-                    while not cancel.is_set():
-                        line = resp.readline()
-                        if not line:
-                            break
-                        out.put(("chunk", line))
-            out.put(("end",))
-        except urllib.error.HTTPError as exc:
+        woke = False
+        while True:
             try:
-                text = exc.read().decode("utf-8", errors="replace")
-            except OSError:
-                text = ""
-            out.put(("http_error", exc.code, text))
-        except (urllib.error.URLError, OSError) as exc:
-            out.put(("error", f"the local model server is not reachable ({exc}). "
-                              f"Start it with: cc local serve"))
-        except Exception as exc:                       # never leave the client hanging
-            out.put(("error", f"unexpected gateway error: {exc}"))
+                with self.semaphore:
+                    if cancel.is_set():
+                        return
+                    with urllib.request.urlopen(self._request(f"{self.upstream}/v1/messages", payload),
+                                                timeout=1800) as resp:
+                        out.put(("open", resp.status, resp.headers.get("Content-Type", "application/json")))
+                        while not cancel.is_set():
+                            line = resp.readline()
+                            if not line:
+                                break
+                            out.put(("chunk", line))
+                out.put(("end",))
+                return
+            except urllib.error.HTTPError as exc:
+                try:
+                    text = exc.read().decode("utf-8", errors="replace")
+                except OSError:
+                    text = ""
+                finally:
+                    exc.close()                    # an HTTPError holds the socket open until closed
+                out.put(("http_error", exc.code, text))
+                return
+            except (urllib.error.URLError, OSError) as exc:
+                refused = isinstance(getattr(exc, "reason", exc), ConnectionError)
+                if refused and self.wake and not woke and not cancel.is_set():
+                    # The model was put to sleep after a quiet spell (it frees VRAM and RAM).
+                    # Wake it once and retry; the client is kept alive with pings meanwhile.
+                    woke = True
+                    try:
+                        self._wake_model()
+                    except Exception as wake_error:
+                        out.put(("error", f"the local model was asleep and could not be started: "
+                                          f"{wake_error}"))
+                        return
+                    continue
+                out.put(("error", f"the local model server is not reachable ({exc}). "
+                                  f"Start it with: cc local serve"))
+                return
+            except Exception as exc:                       # never leave the client hanging
+                out.put(("error", f"unexpected gateway error: {exc}"))
+                return
+
+    def _server_up(self):
+        try:
+            with urllib.request.urlopen(f"{self.upstream}/health", timeout=3) as resp:
+                return resp.status == 200
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            return False
+        except (urllib.error.URLError, OSError, ValueError):
+            return False
+
+    def _wake_model(self):
+        """Start the model server if it is not up. One caller does it; the rest wait and reuse."""
+        with self._wake_lock:
+            if not self._server_up():
+                self.wake()
 
     # ------------------------------------------------------------------ messages
 
@@ -251,6 +292,19 @@ class LocalRoute:
                                      headers_sent=headers_sent)
 
 
+def sleep_model_if_idle(route, is_running, stop):
+    """Free the model's VRAM/RAM after ``idle_stop_minutes`` of silence. Returns True if it did.
+
+    Only the MODEL sleeps. The gateway stays up (it costs almost nothing) so the client's
+    connection never breaks, and the next request wakes the model on demand.
+    """
+    minutes = route.cfg.get("idle_stop_minutes") or 0
+    if minutes <= 0 or route.idle_seconds() < minutes * 60 or not is_running():
+        return False
+    stop()
+    return True
+
+
 def build(model_id=None):
     """Construct the route from on-disk config. Used by the gateway at startup."""
     from . import serve                                  # late: avoids an import cycle
@@ -261,4 +315,5 @@ def build(model_id=None):
                        event_log=os.path.join(store.logs_dir(), "gateway-events.jsonl"))
     installed = (cfg.get("models") or {}).get(model_id) or {}
     route.n_ctx = installed.get("ctx") or entry["ctx"][0]
+    route.wake = lambda: serve.start_server(cfg, model_id)
     return route, model_id

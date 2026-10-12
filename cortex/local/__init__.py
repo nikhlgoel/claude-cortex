@@ -224,8 +224,16 @@ def cmd_install(args):
             return 2
         repo, model_id, entry = hub.validate_repo(target), None, None
         if not quant and not filename:
-            print("cc: for a repository that is not in the catalog, choose a file with --quant or --file.",
+            # Show what is there rather than make the person go and look it up.
+            available = sorted((f for f in hub.list_files(repo, cfg["hf"]["endpoint"])
+                                if f["kind"] == "model"), key=lambda f: f["size"])
+            print(f"{repo} has {len(available)} model file(s). Choose one with --quant or --file:",
                   file=sys.stderr)
+            for f in available[:25]:
+                print(f"  {f['quant'] or '?':<14} {_gb(f['size']):>10}  {f['path']}", file=sys.stderr)
+            if len(available) > 25:
+                print(f"  ... and {len(available) - 25} more", file=sys.stderr)
+            print(f"  e.g.  cc local install {repo} --quant Q4_K_M", file=sys.stderr)
             return 2
 
     files = hub.list_files(repo, cfg["hf"]["endpoint"])
@@ -262,10 +270,15 @@ def cmd_install(args):
         return 1
 
     paths = []
-    for f in group:
-        print(f"  {f['path']}")
-        paths.append(hub.download(repo, f, hub.safe_dest(models_root, repo, f["path"]),
-                                  cfg["hf"]["endpoint"], progress=_progress()))
+    try:
+        for f in group:
+            print(f"  {f['path']}")
+            paths.append(hub.download(repo, f, hub.safe_dest(models_root, repo, f["path"]),
+                                      cfg["hf"]["endpoint"], progress=_progress()))
+    except KeyboardInterrupt:
+        print("\nInterrupted. Nothing is lost: run the same command again and it resumes where it "
+              "stopped (finished files are kept and verified, not downloaded again).")
+        return 130
 
     def register(c):
         c["data_dir"] = c.get("data_dir") or models_root

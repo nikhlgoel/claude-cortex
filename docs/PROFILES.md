@@ -68,6 +68,13 @@ rewrite its `.claude.json`, repair it (`cc doctor --repair` skips it) or delete 
 (`cc profile remove` only unregisters). Registered paths are stored exactly as given, because
 the login is tied to the exact path string; give them without a trailing slash.
 
+## Installers
+
+`install.sh`, `install.ps1` and `install.cmd` are thin launchers: each finds Python 3.8+ (or uses
+`CORTEX_PYTHON`) and runs the one tested `install.py`, passing every option through and returning
+its exit code (0 done, 2 unrecognised option, 3 stopped at the safety prompt). They never download
+anything; if Claude Code is not installed they tell you how to install it.
+
 ## Testing safely when Claude is the thing being changed
 
 You cannot reinstall Claude while it is running, and an installer that misbehaves could damage
@@ -85,7 +92,9 @@ the accounts you are using to run it. So test in layers, and let the machine pro
    cc guard verify before
    ```
    It fails if any *protected* file (settings, configs, credentials, plugins, skills) was
-   added, removed or changed. Normal activity (history, sessions, caches) is only summarised.
+   added, removed or changed - including your account, MCP servers and onboarding state in
+   `~/.claude.json` (compared by what they say, not by timestamps, since Claude Code rewrites that
+   file constantly). Normal activity (history, sessions, caches) is only summarised.
    Credential files are compared by size and time; their contents are never read. Close
    Claude Desktop first for a clean verdict - it rewrites its own config while running.
 4. **For a stronger wall,** use a separate Windows user account or a virtual machine. (Windows

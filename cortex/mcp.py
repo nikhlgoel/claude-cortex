@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 from . import binary, jsonfile, proc, profiles
-from .paths import apply_config_env, profile_dir
+from .paths import apply_config_env, profile_dir, user_config_path
 
 SERVER_NAME = "cortex"
 
@@ -60,13 +60,35 @@ def _python():
     return shutil.which("python3") or shutil.which("python") or sys.executable
 
 
+def _native(path):
+    """Native separators on Windows (an MSYS-built Python hands back forward slashes)."""
+    return path.replace("/", "\\") if os.name == "nt" and path else path
+
+
+def _registered_servers(profile):
+    """Names registered in the profile's user config (read-only)."""
+    config = user_config_path(profile_dir(profile))
+    servers = jsonfile.read(config, {}).get("mcpServers")
+    return set(servers) if isinstance(servers, dict) else set()
+
+
+def _claude_mcp(profile, *args):
+    """Run ``claude mcp ...`` against a profile's own config. Returns CompletedProcess or None."""
+    claude = binary.find()
+    if not claude:
+        print("cc mcp: no working Claude Code binary found (run: cc doctor).", file=sys.stderr)
+        return None
+    env = apply_config_env(dict(os.environ), profile_dir(profile))
+    try:
+        return proc.run([claude, "mcp", *args], timeout=90, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"cc mcp: could not run claude: {exc}", file=sys.stderr)
+        return None
+
+
 def cmd_status(profile):
     """Show whether the server is registered for a profile."""
-    config = os.path.join(profile_dir(profile), ".claude.json")
-    data = jsonfile.read(config, {})
-    servers = data.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
+    servers = _registered_servers(profile)
 
     print("=" * 70)
     print(f"  Cortex MCP - profile '{profile}'")
@@ -86,39 +108,32 @@ def cmd_status(profile):
 
 
 def cmd_add(profile, dry_run=False):
-    """Register the server in a profile's config."""
+    """Register the Cortex server for a profile, through Claude Code's own `mcp add`.
+
+    This used to read and rewrite the profile's whole config file directly. For the
+    default account that file is ~/.claude.json, which Claude Code rewrites constantly
+    while it runs, so a direct read-modify-write could silently drop an update made in
+    between. `claude mcp add` is the supported write path.
+    """
     server_path = _server_path()
     if not server_path:
         print("cc mcp: cortex-mcp.py not found. Reinstall Cortex.", file=sys.stderr)
         return 1
+    if SERVER_NAME in _registered_servers(profile):
+        print(f"Already registered for profile '{profile}'.")
+        return 0
 
-    config = os.path.join(profile_dir(profile), ".claude.json")
-    entry = {
-        "type": "stdio",
-        "command": _python(),
-        "args": [server_path],
-        "env": {},
-    }
-
-    with jsonfile.file_lock(config):
-        data = jsonfile.read(config, {})
-        servers = data.get("mcpServers")
-        if not isinstance(servers, dict):
-            servers = {}
-
-        if servers.get(SERVER_NAME) == entry:
-            print(f"Already registered for profile '{profile}'.")
-            return 0
-
-        if dry_run:
-            print(f"[dry-run] would register '{SERVER_NAME}' for profile '{profile}':")
-            print(f"    command: {entry['command']} {server_path}")
-            return 0
-
-        servers[SERVER_NAME] = entry
-        data["mcpServers"] = servers
-        jsonfile.write(config, data)
-
+    command = ["add", "--scope", "user", SERVER_NAME, "--", _native(_python()), server_path]
+    if dry_run:
+        print(f"[dry-run] would register '{SERVER_NAME}' for profile '{profile}':")
+        print(f"    claude mcp {' '.join(command)}")
+        return 0
+    result = _claude_mcp(profile, *command)
+    if result is None:
+        return 1
+    if result.returncode != 0:
+        print(f"cc mcp: registering failed:\n{(result.stderr or result.stdout).strip()}", file=sys.stderr)
+        return 1
     print(f"Registered '{SERVER_NAME}' MCP server for profile '{profile}'.")
     print("Start a new session under that profile and the tools are available:")
     print("  " + ", ".join(TOOL_NAMES))
@@ -126,64 +141,42 @@ def cmd_add(profile, dry_run=False):
 
 
 def cmd_remove(profile):
-    config = os.path.join(profile_dir(profile), ".claude.json")
-    with jsonfile.file_lock(config):
-        data = jsonfile.read(config, {})
-        servers = data.get("mcpServers")
-        if not isinstance(servers, dict) or SERVER_NAME not in servers:
-            print(f"Not registered for profile '{profile}'.")
-            return 0
-        del servers[SERVER_NAME]
-        if servers:
-            data["mcpServers"] = servers
-        else:
-            data.pop("mcpServers", None)
-        jsonfile.write(config, data)
+    if SERVER_NAME not in _registered_servers(profile):
+        print(f"Not registered for profile '{profile}'.")
+        return 0
+    result = _claude_mcp(profile, "remove", "--scope", "user", SERVER_NAME)
+    if result is None:
+        return 1
+    if result.returncode != 0:
+        print(f"cc mcp: removing failed:\n{(result.stderr or result.stdout).strip()}", file=sys.stderr)
+        return 1
     print(f"Removed '{SERVER_NAME}' MCP server from profile '{profile}'.")
     return 0
-
-
-def _registered_servers(profile):
-    """Names registered in the profile's user config (read-only)."""
-    from .paths import is_native_default
-    folder = profile_dir(profile)
-    # The native default keeps its user config next to the folder, not inside it.
-    config = os.path.join(os.path.dirname(folder), ".claude.json") if is_native_default(folder) \
-        else os.path.join(folder, ".claude.json")
-    servers = jsonfile.read(config, {}).get("mcpServers")
-    return set(servers) if isinstance(servers, dict) else set()
 
 
 def cmd_add_external(server, profile, dry_run=False):
     """Register a known third-party MCP server for a profile via `claude mcp add`."""
     spec = EXTERNAL[server]
-    exe = shutil.which(spec["command"])
+    exe = _native(shutil.which(spec["command"]))
     if not exe:
-        print(f"cc mcp: '{spec['command']}' is not installed.\n"
-              f"    Install it yourself with:  uv tool install {spec['package']}", file=sys.stderr)
+        print(f"cc mcp: '{spec['command']}' is not installed.", file=sys.stderr)
+        print(f"    Install it yourself with:  uv tool install {spec['package']}", file=sys.stderr)
         return 1
     if server in _registered_servers(profile):
         print(f"'{server}' is already registered for profile '{profile}'.")
         return 0
-    claude = binary.find()
-    if not claude:
-        print("cc mcp: no working Claude Code binary found (run: cc doctor).", file=sys.stderr)
-        return 1
 
-    command = [claude, "mcp", "add", "--scope", "user", server, "--", exe]
+    command = ["add", "--scope", "user", server, "--", exe]
     if dry_run:
-        print(f"[dry-run] would run: {' '.join(command)}")
-        print(f"          with the config folder of profile '{profile}'")
+        print(f"[dry-run] would run: claude mcp {' '.join(command)}")
+        print(f"          against the config of profile '{profile}'")
         return 0
-    env = apply_config_env(dict(os.environ), profile_dir(profile))
-    try:
-        result = proc.run(command, timeout=90, env=env)
-    except (OSError, subprocess.SubprocessError) as exc:
-        print(f"cc mcp: could not run claude: {exc}", file=sys.stderr)
+    result = _claude_mcp(profile, *command)
+    if result is None:
         return 1
     if result.returncode != 0:
-        print(f"cc mcp: registering '{server}' failed:\n{(result.stderr or result.stdout).strip()}",
-              file=sys.stderr)
+        print(f"cc mcp: registering '{server}' failed:", file=sys.stderr)
+        print((result.stderr or result.stdout).strip(), file=sys.stderr)
         return 1
     print(f"Registered '{server}' for profile '{profile}' ({spec['about']})")
     print("Start a new session under that profile to use it.")
@@ -191,12 +184,12 @@ def cmd_add_external(server, profile, dry_run=False):
 
 
 def cmd_remove_external(server, profile):
-    claude = binary.find()
-    if not claude:
-        print("cc mcp: no working Claude Code binary found.", file=sys.stderr)
+    if server not in _registered_servers(profile):
+        print(f"'{server}' is not registered for profile '{profile}'.")
+        return 0
+    result = _claude_mcp(profile, "remove", "--scope", "user", server)
+    if result is None:
         return 1
-    env = apply_config_env(dict(os.environ), profile_dir(profile))
-    result = proc.run([claude, "mcp", "remove", "--scope", "user", server], timeout=60, env=env)
     print((result.stdout or result.stderr).strip() or f"Removed '{server}'.")
     return result.returncode
 
@@ -291,6 +284,10 @@ def main(args):
     positional = [a for a in rest if not a.startswith("-")]
     profile = profiles.normalize_name(explicit or (positional[0] if positional else "")) \
         or profiles.active_profile()
+    if action in ("add", "remove", "status") and profile not in profiles.list_profiles():
+        available = ", ".join(profiles.list_profiles()) or "none yet"
+        print(f"cc mcp: profile '{profile}' does not exist. Available: {available}", file=sys.stderr)
+        return 1
 
     if server and action == "add":
         return cmd_add_external(server, profile, dry_run="--dry-run" in rest)

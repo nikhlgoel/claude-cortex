@@ -38,21 +38,44 @@ between them, and keep IDE and terminal sessions on the same profile.
 ## Install
 
 ```bash
-./install.sh --dry-run    # see exactly what it will change
-./install.sh              # asks for confirmation before touching anything
+./install.sh --dry-run                       # see exactly what it will change
+./install.sh                                 # asks you to type INSTALL before touching anything
+./install.sh --yes --surfaces terminal,ide   # unattended, choosing where you will use it
 ```
 
-Windows:
+Windows (any of these; they all run the same `install.py`):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+.\install.ps1 -DryRun
+.\install.ps1 -Surfaces terminal,desktop
+install.cmd --dry-run          # also works by double-click
+python install.py --help
 ```
 
-The installer will not run non-interactively without `--yes` or
-`CORTEX_SANDBOX=1`, because it replaces the `claude` command on your PATH and
-writes lifecycle hooks. It never moves or deletes your official Claude Code
-installation.
+`--surfaces` is any mix of `terminal`, `ide` and `desktop`; ask-me-later is fine, and
+`cc profile surfaces <name> terminal,ide,desktop` adds more at any time. The choice only
+controls what the installer touches (PATH for the terminal, the Cortex tools for Claude
+Desktop, a pointer for IDEs) - never which account or data you use.
+
+Things the installer will **not** do:
+
+- run non-interactively without `--yes` or `CORTEX_SANDBOX=1` (exit code 3, nothing changed);
+- download or run any program - if Claude Code is missing it tells you how to install it;
+- move, copy, edit or delete your existing Claude folders, settings or logins;
+- accept an option it does not recognise (exit code 2) rather than quietly doing a full install.
+
+**Testing it without risking your setup.** Point every location at a throwaway folder and set
+the sandbox flag; the real PATH, `~/.claude` and Claude Desktop folders are never read or written:
+
+```powershell
+$t = Join-Path $env:TEMP "cortex-try"; New-Item -ItemType Directory $t | Out-Null
+$env:CORTEX_SANDBOX = "1"; $env:HOME = $t; $env:USERPROFILE = $t
+$env:APPDATA = "$t\roaming"; $env:LOCALAPPDATA = "$t\local"
+.\install.ps1 -Yes -Surfaces terminal        # installs into $t only
+```
+
+The test suite does exactly this (`tests/test_installer_surfaces.py`, `tests/test_launchers.py`)
+and checks the real user PATH is byte-identical before and after.
 
 ## Usage
 

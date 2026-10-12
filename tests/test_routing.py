@@ -23,7 +23,10 @@ sys.dont_write_bytecode = True
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_DIR)
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from cortex import launcher, mcp, paths, profiles, routing  # noqa: E402
+from routing_corpus import FIRE, QUIET  # noqa: E402
 
 
 def load_module(relpath):
@@ -50,10 +53,47 @@ def route(prompt, tools=ALL_TOOLS, ecc=True, graph=False, env=None):
 
 
 class TestRouting(unittest.TestCase):
+    def test_ordinary_prompts_never_get_a_hint(self):
+        """The first version put a wrong hint on 12 of 25 everyday prompts (48%)."""
+        wrong = [(p, routing.match(p, "/w", which=lambda n: "/bin/" + n if n in ALL_TOOLS else None,
+                                   exists=lambda x: x.endswith("ecc"), env={})[0]) for p in QUIET]
+        wrong = [(p, r) for p, r in wrong if r]
+        self.assertEqual(wrong, [], f"{len(wrong)}/{len(QUIET)} ordinary prompts got a hint")
+
+    def test_clear_requests_reach_the_right_tool(self):
+        missed = []
+        for prompt, expected in FIRE:
+            got = routing.match(prompt, "/w", which=lambda n: "/bin/" + n if n in ALL_TOOLS else None,
+                                exists=lambda x: x.endswith("ecc"), env={})[0]
+            if got != expected:
+                missed.append((prompt, expected, got))
+        self.assertEqual(missed, [], f"{len(missed)}/{len(FIRE)} clear requests were not routed")
+
+    def test_the_corpus_is_large_enough_to_mean_something(self):
+        self.assertGreaterEqual(len(QUIET), 80)
+        self.assertGreaterEqual(len(FIRE), 30)
+        self.assertEqual(len(set(QUIET)), len(QUIET), "duplicate prompts inflate the corpus")
+
+    def test_pasted_logs_and_code_in_a_long_prompt_cannot_trigger_a_hint(self):
+        pasted = "line of log output with who calls and call graph and scrape in it\n" * 200
+        prompt = "please fix the failing test shown below\n" + pasted + "thanks, that is all"
+        self.assertGreater(len(prompt), routing.LONG_PROMPT)
+        self.assertIsNone(route(prompt))
+
+    def test_a_long_prompt_still_routes_when_the_ask_is_at_the_start(self):
+        prompt = "who calls load_config in this repo? context follows.\n" + "x " * 2000
+        self.assertIn("Graphify", route(prompt) or "")
+
+    def test_package_manager_dependency_graphs_are_not_code_structure(self):
+        self.assertIsNone(route("the dependency graph in my package.json has a version conflict"))
+
+    def test_search_engine_crawling_is_not_a_scraping_request(self):
+        self.assertIsNone(route("add a sitemap so search engines can crawl the site"))
+
     def test_scraping_prompts_point_at_scrapling(self):
         for prompt in ("scrape the product prices from this website into a CSV",
                        "write a crawler that follows every link on the docs site",
-                       "extract the data from the page at that url using css selectors"):
+                       "extract all the prices from this webpage into a table"):
             hint = route(prompt)
             self.assertIsNotNone(hint, prompt)
             self.assertIn("Scrapling", hint)
@@ -82,15 +122,6 @@ class TestRouting(unittest.TestCase):
         self.assertIsNone(route("scrape the prices from this website please", tools=set()))
         self.assertIsNone(route("who calls load_config across the whole repo", tools=set()))
         self.assertIsNone(route("please do a code review of my changes", ecc=False))
-
-    def test_ordinary_prompts_get_nothing(self):
-        for prompt in ("refactor the login function to use async await",
-                       "explain how python decorators work with an example",
-                       "fix the failing test in the utils module",
-                       "rename this variable everywhere it is used in this file",
-                       "write a function that sorts a list of dictionaries by date",
-                       "why is my docker container exiting immediately"):
-            self.assertIsNone(route(prompt), prompt)
 
     def test_short_and_slash_prompts_are_left_alone(self):
         self.assertIsNone(route("scrape this"))
@@ -235,7 +266,7 @@ class TestMcpExternalServers(Sandbox):
             self.assertEqual(mcp.cmd_add_external("graphify", "work"), 0)
         command = run.call_args[0][0]
         self.assertEqual(command, ["/bin/claude", "mcp", "add", "--scope", "user", "graphify", "--",
-                                   "/bin/graphify-mcp"])
+                                   mcp._native("/bin/graphify-mcp")])      # native separators on Windows
         self.assertEqual(run.call_args.kwargs["env"]["CLAUDE_CONFIG_DIR"], self.work)
 
     def test_the_default_account_is_registered_without_a_config_dir(self):

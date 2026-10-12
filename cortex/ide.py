@@ -31,10 +31,11 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from . import jsonfile, profiles
-from .paths import home, profile_dir
+from .paths import home, is_native_default, profile_dir
 
 # Directory name -> human label. Only IDEs that actually host the extension.
 KNOWN_IDES = {
@@ -121,21 +122,49 @@ def detect():
     return found
 
 
+MANAGED_ENV = ("CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR")
+
+
 def plan(profile: str):
-    """The settings block Cortex would write, for a given profile."""
+    """The settings block Cortex would write, for a given profile.
+
+    For the native default folder (~/.claude) the variables are deliberately NOT set: with
+    CLAUDE_CONFIG_DIR set, Claude Code reads a different .claude.json and the default
+    account loses its MCP servers and project state (see paths.is_native_default).
+    """
     config_dir = profile_dir(profiles.normalize_name(profile))
-    return {
-        "claudeCode.environmentVariables": [
-            {"name": "CLAUDE_CONFIG_DIR", "value": config_dir},
-            {"name": "CLAUDE_SECURESTORAGE_CONFIG_DIR", "value": config_dir},
-        ],
-        "claudeCode.disableLoginPrompt": True,
-    }
+    env = [] if is_native_default(config_dir) else [
+        {"name": "CLAUDE_CONFIG_DIR", "value": config_dir},
+        {"name": "CLAUDE_SECURESTORAGE_CONFIG_DIR", "value": config_dir},
+    ]
+    return {"claudeCode.environmentVariables": env, "claudeCode.disableLoginPrompt": True}
+
+
+def merged(current: dict, desired: dict) -> dict:
+    """What to write: the desired keys, but KEEPING the person's own environment variables.
+
+    ``claudeCode.environmentVariables`` is a list shared with whatever the person already
+    put there (API proxies, feature flags...). Only Cortex's own two entries are replaced.
+    """
+    out = dict(desired)
+    existing = current.get("claudeCode.environmentVariables")
+    kept = [entry for entry in (existing if isinstance(existing, list) else [])
+            if not (isinstance(entry, dict) and entry.get("name") in MANAGED_ENV)]
+    out["claudeCode.environmentVariables"] = kept + desired["claudeCode.environmentVariables"]
+    return out
+
+
+def _unknown_profile(profile):
+    available = ", ".join(profiles.list_profiles()) or "none yet"
+    print(f"cc: profile '{profile}' does not exist. Available: {available}", file=sys.stderr)
+    return 1
 
 
 def check(profile=None):
     """Report IDE state and what would be written. Never modifies anything."""
     profile = profile or profiles.active_profile()
+    if profiles.normalize_name(profile) not in profiles.list_profiles():
+        return _unknown_profile(profile)
     ides = detect()
 
     print("=" * 74)
@@ -180,10 +209,16 @@ def check(profile=None):
             print("          not expect that will fail. It also disables CLAUDE_CONFIG_DIR")
             print("          watching. Prefer environmentVariables unless you need it.")
 
-        matches = all(current.get(k) == v for k, v in desired.items())
+        target = merged(current, desired)
+        matches = all(current.get(k) == v for k, v in target.items())
         print(f"    configured   : {'yes' if matches else 'no'}")
         if not matches:
-            print(f"    would set    : CLAUDE_CONFIG_DIR = {desired['claudeCode.environmentVariables'][0]['value']}")
+            env = desired["claudeCode.environmentVariables"]
+            if env:
+                print(f"    would set    : CLAUDE_CONFIG_DIR = {env[0]['value']}")
+            else:
+                print("    would clear  : Cortex's CLAUDE_CONFIG_DIR setting (the default account runs")
+                print("                   with it unset, as plain `claude` does)")
 
     print("\n" + "=" * 74)
     print(f"  {problems} warning(s)" if problems else "  No warnings")
@@ -200,6 +235,8 @@ def apply(profile=None, dry_run=True):
     written before any change.
     """
     profile = profile or profiles.active_profile()
+    if profiles.normalize_name(profile) not in profiles.list_profiles():
+        return _unknown_profile(profile)
     desired = plan(profile)
     ides = detect()
 
@@ -231,7 +268,8 @@ def apply(profile=None, dry_run=True):
             print("    (add a comma after the preceding entry when pasting)")
             continue
 
-        if all(current.get(k) == v for k, v in desired.items()):
+        target = merged(current, desired)
+        if all(current.get(k) == v for k, v in target.items()):
             print(f"  {ide['label']}: already configured")
             continue
 
@@ -239,7 +277,7 @@ def apply(profile=None, dry_run=True):
             print(f"  [dry-run] {ide['label']}: would set {', '.join(MANAGED_KEYS)}")
             continue
 
-        current.update(desired)
+        current.update(target)
         jsonfile.write(ide["settings_path"], current)
         print(f"  {ide['label']}: configured for profile '{profile}' "
               f"(backup: settings.json.bak)")

@@ -16,6 +16,7 @@ import json
 import os
 import queue
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -444,6 +445,77 @@ class TestHub(IsolatedHome):
         with open(dest, "rb") as fh:
             self.assertEqual(fh.read(), body, "the resumed file was corrupted by appending a full body")
 
+    def test_a_partial_that_is_already_complete_is_verified_without_touching_the_network(self):
+        """Cut off after the last byte but before verification: the server would answer 416."""
+        body = b"complete-model" * 100
+        entry = {"path": "m.gguf", "size": len(body), "sha256": hashlib.sha256(body).hexdigest()}
+        dest = os.path.join(self.home, "m.gguf")
+        with open(dest + ".part", "wb") as fh:
+            fh.write(body)
+        opener = FakeOpener(b"SHOULD NOT BE READ")
+        hub.download("o/r", entry, dest, opener=opener)
+        self.assertEqual(opener.requests, [])
+        with open(dest, "rb") as fh:
+            self.assertEqual(fh.read(), body)
+
+    def test_a_finished_shard_from_an_earlier_run_is_reused_not_downloaded_again(self):
+        body = b"shard-one" * 200
+        entry = {"path": "m-00001-of-00002.gguf", "size": len(body),
+                 "sha256": hashlib.sha256(body).hexdigest()}
+        dest = os.path.join(self.home, "m-00001-of-00002.gguf")
+        with open(dest, "wb") as fh:
+            fh.write(body)
+        opener = FakeOpener(b"SHOULD NOT BE READ")
+        shown = []
+        hub.download("o/r", entry, dest, opener=opener, progress=lambda d, w: shown.append((d, w)))
+        self.assertEqual(opener.requests, [])
+        self.assertEqual(shown[-1], (len(body), len(body)))
+
+    def test_a_file_of_the_right_size_but_the_wrong_content_is_replaced(self):
+        good = b"g" * 500
+        entry = {"path": "m.gguf", "size": 500, "sha256": hashlib.sha256(good).hexdigest()}
+        dest = os.path.join(self.home, "m.gguf")
+        with open(dest, "wb") as fh:
+            fh.write(b"x" * 500)                         # same size, different content
+        hub.download("o/r", entry, dest, opener=FakeOpener(good))
+        with open(dest, "rb") as fh:
+            self.assertEqual(fh.read(), good)
+
+    def test_a_stale_partial_that_the_server_rejects_restarts_cleanly_once(self):
+        """The upstream file changed: bytes=N- is a 416. Start over instead of dead-ending."""
+        good = b"fresh-content" * 100
+        entry = {"path": "m.gguf", "size": len(good), "sha256": hashlib.sha256(good).hexdigest()}
+        dest = os.path.join(self.home, "m.gguf")
+        with open(dest + ".part", "wb") as fh:
+            fh.write(b"old" * 50)
+
+        class Rejecting(FakeOpener):
+            def open(self, req, timeout=None):
+                self.requests.append(req)
+                if req.get_header("Range"):
+                    raise urllib.error.HTTPError(req.full_url, 416, "Range Not Satisfiable", {}, io.BytesIO(b""))
+                return FakeResp(self.body)
+        opener = Rejecting(good)
+        hub.download("o/r", entry, dest, opener=opener)
+        self.assertEqual(len(opener.requests), 2)
+        with open(dest, "rb") as fh:
+            self.assertEqual(fh.read(), good)
+
+    def test_a_server_that_keeps_returning_416_fails_instead_of_looping(self):
+        entry = {"path": "m.gguf", "size": 1000, "sha256": None}
+        dest = os.path.join(self.home, "m.gguf")
+        with open(dest + ".part", "wb") as fh:
+            fh.write(b"x" * 10)
+
+        class Always416(FakeOpener):
+            def open(self, req, timeout=None):
+                self.requests.append(req)
+                raise urllib.error.HTTPError(req.full_url, 416, "Range Not Satisfiable", {}, io.BytesIO(b""))
+        opener = Always416(b"")
+        with self.assertRaises(hub.HubError):
+            hub.download("o/r", entry, dest, opener=opener)
+        self.assertLessEqual(len(opener.requests), 2)
+
     def test_non_gguf_files_are_never_downloaded(self):
         opener = FakeOpener(b"x")
         with self.assertRaises(hub.HubError):
@@ -553,6 +625,53 @@ class TestPlan(unittest.TestCase):
     def test_the_default_is_one_slot_so_the_full_context_is_available(self):
         self.assertEqual(store.DEFAULTS["gateway"]["max_concurrent"], 1)
 
+    ENTRY = None
+    BASE_FLAGS = {"-m", "--host", "--port", "--alias", "-c", "-np", "--jinja", "--api-key-file", "-ngl",
+                  "--cache-type-k", "--cache-type-v", "--reasoning-budget", "--cpu-moe", "--fit", "-t"}
+
+    def args(self, entry_id="qwen3.5-4b", verdict="gpu", **kw):
+        entry = catalog.get(entry_id)
+        plan_info = {"verdict": verdict, "ctx": 16384, "weights_gb": entry["approx_gb"],
+                     "vram_gb": 5.0, "kv_gb": 0.5}
+        return plan.llama_args("m.gguf", entry, plan_info, 8180, "a", "tokenfile", **kw)
+
+    def test_an_optional_flag_the_build_lacks_is_left_out_and_said_so(self):
+        notes = []
+        args = self.args(supported=self.BASE_FLAGS - {"--reasoning-budget"}, notes=notes)
+        self.assertNotIn("--reasoning-budget", args)
+        self.assertIn("--cache-type-k", args)
+        self.assertTrue(any("--reasoning-budget" in n for n in notes))
+
+    def test_a_build_without_api_key_file_is_refused_never_given_the_token_on_the_command_line(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.args(supported=self.BASE_FLAGS - {"--api-key-file"})
+        self.assertIn("--api-key-file", str(ctx.exception))
+
+    def test_minimal_mode_keeps_only_the_essentials(self):
+        args = self.args(minimal=True)
+        for flag in ("--cache-type-k", "--cache-type-v", "--reasoning-budget"):
+            self.assertNotIn(flag, args)
+        for flag in ("--api-key-file", "--jinja", "-c", "-np", "--host"):
+            self.assertIn(flag, args)
+
+    def test_the_flash_attention_flag_is_never_passed(self):
+        """'-fa' and '-fa on' differ between builds; the wrong form breaks the whole command line."""
+        self.assertNotIn("-fa", self.args())
+
+    def test_gpu_offload_uses_a_number_every_build_understands(self):
+        args = self.args(verdict="gpu")
+        self.assertEqual(args[args.index("-ngl") + 1], "99")
+
+    def test_a_dense_model_without_fit_gets_an_estimated_layer_count_and_a_note(self):
+        notes = []
+        args = self.args("qwen3.5-9b", "split", supported=self.BASE_FLAGS - {"--fit"}, notes=notes)
+        layers = int(args[args.index("-ngl") + 1])
+        self.assertTrue(0 <= layers <= 32)
+        self.assertTrue(any("estimate" in n for n in notes))
+
+    def test_an_unknown_help_text_assumes_nothing_is_missing(self):
+        self.assertIn("--cache-type-k", self.args(supported=None))
+
     def test_moe_spill_keeps_experts_on_the_cpu(self):
         entry = catalog.get("qwen3.6-35b-a3b")
         args = plan.llama_args("m.gguf", entry, {"verdict": "split", "ctx": 16384}, 8180, "a", "t")
@@ -598,6 +717,21 @@ class TestRuntime(IsolatedHome):
     def test_a_release_without_windows_builds_is_explained(self):
         with self.assertRaises(runtime.RuntimeInstallError):
             runtime.choose_assets(release("llama-b9999-bin-ubuntu-x64.zip"), hardware())
+
+    HELP = ("-m, --model FNAME\n--host HOST\n--port PORT\n-c, --ctx-size N\n--alias STRING\n-np, --parallel N\n"
+            "--jinja\n--api-key-file FNAME\n--cache-type-k TYPE\n--cache-type-v TYPE\n-ngl, --gpu-layers N\n")
+
+    def test_the_builds_own_help_decides_which_flags_exist(self):
+        fake = mock.Mock(return_value=subprocess.CompletedProcess([], 0, self.HELP, ""))
+        flags = runtime.supported_flags("llama-server", runner=fake)
+        self.assertIn("--api-key-file", flags)
+        self.assertIn("-ngl", flags)
+        self.assertNotIn("--fit", flags)
+
+    def test_unreadable_or_garbled_help_means_unknown_not_nothing(self):
+        garbled = mock.Mock(return_value=subprocess.CompletedProcess([], 1, "error", ""))
+        self.assertIsNone(runtime.supported_flags("x", runner=garbled))
+        self.assertIsNone(runtime.supported_flags("x", runner=mock.Mock(side_effect=OSError("nope"))))
 
     def test_a_zip_that_tries_to_escape_the_install_folder_is_refused(self):
         archive = os.path.join(self.home, "evil.zip")
@@ -676,6 +810,58 @@ class TestServe(IsolatedHome):
         self.assertIn("does not fit", str(ctx.exception))
         popen.assert_not_called()
 
+    def start(self, outcomes, supported=None, model="qwen3.5-4b"):
+        cfg = self._installed(model, int(2.7 * plan.GIB))
+        launches = []
+
+        def fake_launch(exe, args, port, model_id, notes):
+            launches.append(list(args))
+            return outcomes[len(launches) - 1]
+        patches = (mock.patch.object(serve, "port_in_use", return_value=False),
+                   mock.patch.object(serve.runtime, "find", return_value="llama-server"),
+                   mock.patch.object(serve.runtime, "supported_flags", return_value=supported),
+                   mock.patch.object(serve, "_launch_and_wait", side_effect=fake_launch))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return cfg, launches
+
+    def test_a_failed_load_is_retried_once_with_only_the_essential_flags(self):
+        cfg, launches = self.start([("exited", "unknown argument"), ("ok", "")])
+        self.assertEqual(serve.start_server(cfg, "qwen3.5-4b", hw=hardware()), cfg["ports"]["server"])
+        self.assertEqual(len(launches), 2)
+        self.assertIn("--cache-type-k", launches[0])
+        self.assertNotIn("--cache-type-k", launches[1])
+        self.assertIn("--api-key-file", launches[1], "the retry must never weaken the token handling")
+
+    def test_when_both_attempts_fail_the_error_says_so_and_shows_the_log(self):
+        cfg, launches = self.start([("exited", "first failure"), ("exited", "second failure")])
+        with self.assertRaises(serve.ServeError) as ctx:
+            serve.start_server(cfg, "qwen3.5-4b", hw=hardware())
+        self.assertIn("essential flags", str(ctx.exception))
+        self.assertIn("second failure", str(ctx.exception))
+        self.assertEqual(len(launches), 2)
+
+    def test_a_load_that_works_the_first_time_is_not_retried(self):
+        cfg, launches = self.start([("ok", "")])
+        serve.start_server(cfg, "qwen3.5-4b", hw=hardware())
+        self.assertEqual(len(launches), 1)
+
+    def test_a_timeout_is_not_mistaken_for_a_flag_problem_and_is_not_retried(self):
+        cfg, launches = self.start([("timeout", "still loading")])
+        with mock.patch.object(serve, "stop"), self.assertRaises(serve.ServeError):
+            serve.start_server(cfg, "qwen3.5-4b", hw=hardware())
+        self.assertEqual(len(launches), 1)
+
+    def test_a_build_without_token_file_support_is_refused_before_anything_starts(self):
+        supported = {"-m", "--host", "--port", "--alias", "-c", "-np", "--jinja", "-ngl", "-t", "--fit",
+                     "--cpu-moe", "--cache-type-k", "--cache-type-v", "--reasoning-budget"}
+        cfg, launches = self.start([("ok", "")], supported=supported)
+        with self.assertRaises(serve.ServeError) as ctx:
+            serve.start_server(cfg, "qwen3.5-4b", hw=hardware())
+        self.assertIn("--api-key-file", str(ctx.exception))
+        self.assertEqual(launches, [])
+
     def test_an_unknown_gguf_is_treated_as_a_plain_non_thinking_model(self):
         cfg, _ = store.load()
         cfg["models"]["custom"] = {"size_bytes": 4 * plan.GIB}
@@ -704,6 +890,11 @@ class FakeLlama(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            return self._send_json(200, {"status": "ok"})
+        self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -773,6 +964,7 @@ class TestLocalGateway(IsolatedHome):
 
     def post(self, path, payload, token="__default__", timeout=15):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        self.addCleanup(conn.close)                   # no unclosed sockets left to the GC
         headers = {"Content-Type": "application/json"}
         token = self.TOKEN if token == "__default__" else token
         if token:
@@ -869,6 +1061,63 @@ class TestLocalGateway(IsolatedHome):
         handler.send_response.assert_called_once()                  # the one 200, never a second status
         self.assertTrue(errors[0]["headers_sent"])
 
+    def sleeping_model(self, wake):
+        """Point the route at a dead port, as if the model had been put to sleep."""
+        live = self.route.upstream
+        self.route.upstream = "http://127.0.0.1:9"
+        self.route.wake = lambda: wake(live)
+
+    def test_a_sleeping_model_is_woken_on_demand_and_the_request_still_succeeds(self):
+        calls = []
+
+        def wake(live):
+            calls.append(1)
+            time.sleep(0.9)                       # a cold start takes a while
+            self.route.upstream = live
+        self.sleeping_model(wake)
+        _conn, resp = self.post("/v1/messages", self.BODY)
+        text = resp.read().decode()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("message_stop", text)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("event: ping", text, "the client was not kept alive during the cold start")
+
+    def test_a_model_that_is_already_awake_is_never_woken(self):
+        self.route.wake = mock.Mock()
+        _conn, resp = self.post("/v1/messages", self.BODY)
+        resp.read()
+        self.route.wake.assert_not_called()
+
+    def test_concurrent_requests_during_a_wake_start_the_model_once(self):
+        calls = []
+
+        def wake(live):
+            calls.append(1)
+            time.sleep(0.8)
+            self.route.upstream = live
+        self.sleeping_model(wake)
+        results = []
+
+        def go():
+            _c, r = self.post("/v1/messages", self.BODY, timeout=30)
+            results.append((r.status, "message_stop" in r.read().decode()))
+        threads = [threading.Thread(target=go) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(40)
+        self.assertEqual(results, [(200, True)] * 3)
+        self.assertEqual(len(calls), 1, "the model was started more than once")
+
+    def test_a_wake_that_fails_is_reported_clearly(self):
+        def wake(_live):
+            raise RuntimeError("out of memory")
+        self.sleeping_model(wake)
+        _conn, resp = self.post("/v1/messages", self.BODY)
+        text = resp.read().decode()
+        self.assertIn("could not be started", text)
+        self.assertIn("out of memory", text)
+
     def test_count_tokens_uses_the_servers_answer_and_never_runs_a_generation(self):
         _conn, resp = self.post("/v1/messages/count_tokens", self.BODY)
         self.assertEqual(json.loads(resp.read()), {"input_tokens": 42})
@@ -909,6 +1158,48 @@ class TestLocalGateway(IsolatedHome):
             _conn, resp = self.post("/v1/messages", self.BODY)
             self.assertEqual(resp.status, 200)
             resp.read()
+
+
+class TestIdleSleep(unittest.TestCase):
+    def route(self, minutes=30, idle_for=0.0):
+        cfg = json.loads(json.dumps(store.DEFAULTS))
+        cfg["idle_stop_minutes"] = minutes
+        route = gateway_local.LocalRoute(cfg, dict(catalog.get("qwen3.5-4b")), "tok")
+        route.last_activity = time.monotonic() - idle_for
+        return route
+
+    def test_a_long_quiet_spell_puts_only_the_model_to_sleep(self):
+        stop = mock.Mock()
+        self.assertTrue(gateway_local.sleep_model_if_idle(self.route(30, 31 * 60), lambda: True, stop))
+        stop.assert_called_once()
+
+    def test_a_short_quiet_spell_changes_nothing(self):
+        stop = mock.Mock()
+        self.assertFalse(gateway_local.sleep_model_if_idle(self.route(30, 5 * 60), lambda: True, stop))
+        stop.assert_not_called()
+
+    def test_a_model_that_is_already_asleep_is_not_stopped_again(self):
+        stop = mock.Mock()
+        self.assertFalse(gateway_local.sleep_model_if_idle(self.route(30, 99 * 60), lambda: False, stop))
+        stop.assert_not_called()
+
+    def test_zero_minutes_means_never(self):
+        stop = mock.Mock()
+        self.assertFalse(gateway_local.sleep_model_if_idle(self.route(0, 999 * 60), lambda: True, stop))
+        stop.assert_not_called()
+
+    def test_a_request_in_flight_is_never_idle(self):
+        route = self.route(1, 999 * 60)
+        route.active = 1
+        self.assertEqual(route.idle_seconds(), 0.0)
+        stop = mock.Mock()
+        self.assertFalse(gateway_local.sleep_model_if_idle(route, lambda: True, stop))
+
+    def test_the_gateway_script_no_longer_exits_when_idle(self):
+        with open(os.path.join(PROJECT_DIR, "scripts", "cortex-gateway.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        watchdog = source[source.index("def _idle_watchdog"):source.index("def main")]
+        self.assertNotIn("os._exit", watchdog, "an idle gateway must stay up so the session survives")
 
 
 class TestCloudGatewayCountTokens(unittest.TestCase):
@@ -952,6 +1243,20 @@ class TestCloudGatewayCountTokens(unittest.TestCase):
         handler.send_anthropic_error = mock.Mock()
         handler.handle_local_dispatch({}, {})
         self.assertIn("cc offline", handler.send_anthropic_error.call_args[0][2])
+
+    def test_a_client_closing_a_connection_is_not_a_traceback_in_the_log(self):
+        """Claude Code closes keep-alive connections constantly; on Windows that is an exception."""
+        handler = object.__new__(self.gw.CortexGatewayHandler)
+        for error in (ConnectionResetError(10054, "reset"), ConnectionAbortedError(10053, "aborted"),
+                      BrokenPipeError(32, "pipe")):
+            with mock.patch.object(self.gw.BaseHTTPRequestHandler, "handle", side_effect=error):
+                handler.handle()                      # must not raise
+
+    def test_a_real_bug_inside_a_request_is_still_raised(self):
+        handler = object.__new__(self.gw.CortexGatewayHandler)
+        with mock.patch.object(self.gw.BaseHTTPRequestHandler, "handle", side_effect=ValueError("bug")):
+            with self.assertRaises(ValueError):
+                handler.handle()
 
     def test_local_mode_refuses_a_non_loopback_bind(self):
         with mock.patch.dict(os.environ, {"CORTEX_GATEWAY_ROUTE": "local"}), \
@@ -1005,6 +1310,32 @@ class TestCommands(IsolatedHome):
         self.assertEqual(store.load()[0]["models"], {})
         local.hub.download.assert_not_called()
 
+    def test_ctrl_c_during_a_download_explains_how_to_resume_and_registers_nothing(self):
+        self._patch_hub()
+        local.hub.download.side_effect = KeyboardInterrupt
+        out = io.StringIO()
+        try:
+            with mock.patch("sys.stdout", out):
+                rc = self._install("--yes")
+        except KeyboardInterrupt:                # unittest would treat this as "stop the whole run"
+            self.fail("Ctrl-C escaped instead of being handled")
+        self.assertEqual(rc, 130)
+        self.assertIn("run the same command again", out.getvalue().lower())
+        self.assertEqual(store.load()[0]["models"], {})
+
+    def test_a_configured_folder_on_a_drive_that_was_not_scanned_is_judged_by_the_os(self):
+        folder = os.path.join(self.home, "elsewhere", "models")          # not in any drive map
+        free = shutil.disk_usage(self.home).free / plan.GIB
+        if free < 8:
+            self.skipTest("needs a few GiB free in the temp folder")
+        chosen, why = plan.choose_data_dir(0.0, {}, preferred=folder)
+        self.assertEqual(chosen, folder, why)
+
+    def test_a_configured_folder_that_is_too_full_is_refused_with_the_numbers(self):
+        chosen, why = plan.choose_data_dir(10_000_000.0, {}, preferred=os.path.join(self.home, "m"))
+        self.assertIsNone(chosen)
+        self.assertIn("GiB free", why)
+
     def test_without_a_terminal_and_without_yes_nothing_is_downloaded(self):
         written = self._patch_hub()
         with mock.patch.object(sys.stdin, "isatty", return_value=False):
@@ -1051,10 +1382,15 @@ class TestCommands(IsolatedHome):
         self.assertEqual(local.main(["install", "qwen3.5-99b", "--yes"]), 2)
         local.hub.download.assert_not_called()
 
-    def test_an_arbitrary_repo_needs_a_file_choice(self):
+    def test_an_arbitrary_repo_needs_a_file_choice_and_shows_the_options(self):
         self._patch_hub()
-        self.assertEqual(local.main(["install", "someone/Some-Model-GGUF", "--yes"]), 2)
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            self.assertEqual(local.main(["install", "someone/Some-Model-GGUF", "--yes"]), 2)
         local.hub.download.assert_not_called()
+        self.assertIn("Q4_K_M", err.getvalue())
+        self.assertIn("Qwen3.5-4B-Q4_K_M.gguf", err.getvalue())
+        self.assertIn("--quant", err.getvalue())
 
     def test_removing_a_model_asks_and_only_deletes_inside_the_models_folder(self):
         self._patch_hub()

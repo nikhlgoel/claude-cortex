@@ -103,12 +103,14 @@ class TestRegistry(Sandbox):
             registry.adopt("alpha", ghost)
         self.assertFalse(os.path.exists(ghost))
 
-    def test_relative_and_trailing_slash_paths_are_refused(self):
-        folder = self.make_account("a")
+    def test_relative_paths_are_refused(self):
         with self.assertRaises(CortexError):
             registry.adopt("alpha", "relative/dir")
-        with self.assertRaises(CortexError):
-            registry.adopt("alpha", folder + os.sep)
+
+    def test_a_pasted_trailing_slash_is_cleaned_not_stored(self):
+        folder = self.make_account("a")
+        registry.adopt("alpha", folder + os.sep)
+        self.assertEqual(paths.profile_dir("alpha"), folder)
 
     def test_a_folder_inside_the_cortex_profiles_root_is_refused(self):
         os.makedirs(os.path.join(self.profiles_root, "managed"))

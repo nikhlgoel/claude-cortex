@@ -181,6 +181,29 @@ def fit(entry, weights_gb, hw, ctx=None):
             "vram_gb": gpu_part, "ram_gb": ram_part, "notes": notes}
 
 
+def _free_gb_at(path, disk_free):
+    """Free GiB where ``path`` would live: from the known drives, else asked of the OS.
+
+    A network share, a mounted folder or a drive that was not in the scan used to read as
+    "0 GiB free" and refuse a perfectly good location.
+    """
+    path = os.path.abspath(path)
+    drive = os.path.splitdrive(path)[0]
+    root = (drive + os.sep) if drive else "/"
+    if root in disk_free:
+        return disk_free[root]
+    probe = path
+    while not os.path.exists(probe):             # the folder is created later; ask its parent
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return 0.0
+        probe = parent
+    try:
+        return shutil.disk_usage(probe).free / GIB
+    except OSError:
+        return 0.0
+
+
 def choose_data_dir(need_gb, disk_free, preferred=None):
     """Pick a drive root for model files; avoid the system drive when another has room.
 
@@ -189,9 +212,7 @@ def choose_data_dir(need_gb, disk_free, preferred=None):
     """
     slack = need_gb + 5.0
     if preferred:
-        drive = os.path.splitdrive(os.path.abspath(preferred))[0]
-        root = (drive + os.sep) if drive else "/"
-        free = disk_free.get(root, 0)
+        free = _free_gb_at(preferred, disk_free)
         if free >= slack:
             return preferred, f"configured location ({free:.0f} GiB free)"
         return None, f"the configured location has only {free:.0f} GiB free; need ~{slack:.0f}"
@@ -208,33 +229,81 @@ def choose_data_dir(need_gb, disk_free, preferred=None):
 
 # ---------------------------------------------------------------------- llama-server
 
-def llama_args(model_path, entry, plan, port, alias, token_file, threads=None, parallel=1):
+#: Flags a llama-server build must support for Cortex to use it safely at all.
+REQUIRED_FLAGS = ("--api-key-file", "--jinja")
+
+
+def optional_groups(minimal):
+    """Optional flag groups: each is dropped when the build does not advertise its flag."""
+    if minimal:
+        return []
+    return [["--cache-type-k", "q8_0"], ["--cache-type-v", "q8_0"], ["--reasoning-budget", "8192"]]
+
+
+def gpu_layers(entry, plan):
+    """A layer count for a dense model that does not fit: a labelled ESTIMATE.
+
+    Only used when the build has no ``--fit``. Assumes roughly 32 equal layers, so it errs
+    toward under-filling the GPU rather than running out of memory.
+    """
+    weights = plan.get("weights_gb") or 0
+    if not weights:
+        return 0
+    free_for_weights = max(0.0, (plan.get("vram_gb") or 0) - (plan.get("kv_gb") or 0) - GPU_OVERHEAD_GB)
+    return max(0, min(32, int(32 * min(1.0, free_for_weights / weights)) - 1))
+
+
+def llama_args(model_path, entry, plan, port, alias, token_file, threads=None, parallel=1,
+               minimal=False, supported=None, notes=None):
     """Argument list (after the executable) for ``llama-server``.
 
-    Notes on choices, all from the verified research:
-    * ``-c`` is always explicit: ``--fit`` only adjusts *unset* arguments and its
-      default context floor is 4096, so leaving -c off silently gives a tiny window.
-    * ``--api-key-file`` keeps the token out of the process list (a command-line
-      ``--api-key`` is visible to every local process).
+    ``supported`` is the set of flags the installed build advertises in ``--help`` (None =
+    unknown, assume all). ``minimal`` drops every optional flag - the automatic retry after
+    a failed load. ``notes`` (a list) receives a line for anything dropped or estimated.
+
+    Choices, from the verified research:
+    * ``-c`` is always explicit and scaled by ``-np``: ``--fit`` only adjusts *unset*
+      arguments, its default context floor is 4096, and llama.cpp splits ``-c`` across slots.
+    * ``--api-key-file`` keeps the token out of the process list (a command-line ``--api-key``
+      is visible to every local process). If the build lacks it we REFUSE; there is no
+      fallback that leaks the token.
     * ``--host 127.0.0.1`` only. Never 0.0.0.0.
     * ``--context-shift`` stays off (the default): shifting would corrupt the prompt.
-    * ``-np`` is explicit; the default is "auto".
+    * No ``-fa``: its argument form differs between builds ("-fa" vs "-fa on"), and the
+      default (auto) is right.
     """
+    notes = notes if notes is not None else []
+
+    def has(flag):
+        return supported is None or flag in supported
+
+    missing = [f for f in REQUIRED_FLAGS if not has(f)]
+    if missing:
+        raise ValueError(f"this llama-server build does not support {', '.join(missing)}; "
+                         f"update it with: cc local install --runtime")
+
+    # -ngl 99, not "all": every build accepts a number, only newer ones accept the word.
     args = ["-m", model_path, "--host", "127.0.0.1", "--port", str(port),
-            # llama.cpp splits -c ACROSS the -np slots, so each slot would get ctx/np tokens:
-            # scale it, or two slots at "16384" silently give each request only 8192.
             "--alias", alias, "-c", str(plan["ctx"] * parallel), "-np", str(parallel),
-            "--jinja", "--api-key-file", token_file,
-            "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "on",
-            "--reasoning-budget", "8192"]
+            "--jinja", "--api-key-file", token_file]
+
+    for group in optional_groups(minimal):
+        if has(group[0]):
+            args += group
+        else:
+            notes.append(f"this build has no {group[0]}; leaving it out")
+
     verdict = plan.get("verdict")
     if verdict == "gpu":
-        args += ["-ngl", "all"]
+        args += ["-ngl", "99"]
+    elif verdict == "split" and entry["moe"] and has("--cpu-moe"):
+        args += ["--cpu-moe", "-ngl", "99"]
+    elif verdict == "split" and not minimal and has("--fit"):
+        args += ["--fit", "on"]
     elif verdict == "split":
-        if entry["moe"]:
-            args += ["--cpu-moe", "-ngl", "all"]
-        else:
-            args += ["--fit", "on"]
+        layers = gpu_layers(entry, plan)
+        notes.append(f"no automatic GPU/CPU split available; offloading about {layers} layers (estimate)")
+        args += ["-ngl", str(layers)]
     else:
         args += ["-ngl", "0"]
     if threads:

@@ -60,6 +60,21 @@ def find(cfg=None):
     return found if found and os.path.isfile(found) else None
 
 
+def supported_flags(exe, runner=proc.run):
+    """The command-line flags this llama-server build advertises in ``--help``, or None.
+
+    llama.cpp renames and re-shapes flags between builds, so Cortex asks the installed
+    binary instead of assuming. None means "could not tell" (never "supports nothing").
+    """
+    try:
+        result = runner([exe, "--help"], timeout=30)
+    except Exception:
+        return None
+    text = (result.stdout or "") + (result.stderr or "")
+    flags = set(re.findall(r"(?<![\w-])(--?[A-Za-z][\w-]*)", text))
+    return flags if len(flags) >= 10 else None
+
+
 def verify(path):
     """``(ok, first_line)`` from ``llama-server --version``; never raises."""
     try:

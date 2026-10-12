@@ -122,6 +122,9 @@ def http_ok(url, headers=None, timeout=3):
         req = urllib.request.Request(url, headers=headers or {})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status == 200
+    except urllib.error.HTTPError as exc:
+        exc.close()                       # a 503 while the model loads must not leak a socket per poll
+        return False
     except (urllib.error.URLError, OSError, ValueError):
         return False
 
@@ -209,23 +212,52 @@ def start_server(cfg, model_id, hw=None, force=False, ctx=None):
                          + "\n  (use --force to try anyway)")
 
     store.token()                                # ensure it exists and is restricted
-    args = plan.llama_args(files[0], entry, verdict, port, cfg["claude"]["alias"], store.token_path(),
-                           parallel=parallel)
-    child = _spawn([exe] + args, log_path("llama-server"))
-    _write_state("server", child.pid, port, model_id)
+    supported = runtime.supported_flags(exe)
+    notes = []
 
+    def build(minimal):
+        try:
+            return plan.llama_args(files[0], entry, verdict, port, cfg["claude"]["alias"],
+                                   store.token_path(), parallel=parallel, minimal=minimal,
+                                   supported=supported, notes=notes)
+        except ValueError as exc:
+            raise ServeError(str(exc)) from None
+
+    outcome, detail = _launch_and_wait(exe, build(False), port, model_id, notes)
+    if outcome == "exited":
+        # The most likely cause is an optional flag this build rejects. Retry once with only
+        # the essentials before giving up; the log keeps both attempts.
+        notes = ["the server exited while loading; retrying with only the essential flags"]
+        outcome, detail = _launch_and_wait(exe, build(True), port, model_id, notes)
+    if outcome == "ok":
+        return port
+    if outcome == "timeout":
+        stop("server")
+        raise ServeError(f"llama-server did not become ready within {HEALTH_TIMEOUT_S}s. "
+                         f"Last log lines:\n{detail}")
+    raise ServeError(f"llama-server exited while loading (even with only the essential flags). "
+                     f"Last log lines:\n{detail}")
+
+
+def _launch_and_wait(exe, args, port, model_id, notes):
+    """Start llama-server and wait for it. Returns ``("ok"|"exited"|"timeout", log_tail)``."""
+    log = log_path("llama-server")
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    with open(log, "a", encoding="utf-8") as fh:             # a readable trail for `cc local logs`
+        fh.write("\n=== cortex: starting llama-server ===\n")
+        for note in notes:
+            fh.write(f"=== cortex note: {note}\n")
+    child = _spawn([exe] + args, log)
+    _write_state("server", child.pid, port, model_id)
     deadline = time.time() + HEALTH_TIMEOUT_S
     while time.time() < deadline:
         if child.poll() is not None:
             _clear_state("server")
-            raise ServeError(f"llama-server exited with code {child.returncode} while loading. "
-                             f"Last log lines:\n{tail(log_path('llama-server'))}")
+            return "exited", tail(log)
         if http_ok(f"http://127.0.0.1:{port}/health"):
-            return port
+            return "ok", ""
         time.sleep(1.0)
-    stop("server")
-    raise ServeError(f"llama-server did not become ready within {HEALTH_TIMEOUT_S}s. "
-                     f"Last log lines:\n{tail(log_path('llama-server'))}")
+    return "timeout", tail(log)
 
 
 def start_gateway(cfg, model_id):

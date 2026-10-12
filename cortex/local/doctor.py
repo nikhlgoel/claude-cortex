@@ -113,6 +113,7 @@ def smoke(cfg):
         _post(f"{base}/v1/messages/count_tokens", body, token=None, timeout=15)
         out.append(("fail", "auth", "the gateway answered a request with NO token - it must refuse"))
     except urllib.error.HTTPError as exc:
+        exc.close()
         out.append(("ok" if exc.code == 401 else "fail", "auth",
                     "requests without the token are refused" if exc.code == 401
                     else f"expected 401 without a token, got {exc.code}"))

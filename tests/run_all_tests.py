@@ -48,6 +48,8 @@ TEST_MODULES = [
     "test_profiles_adopt",
     "test_routing",
     "test_installer_surfaces",
+    "test_launchers",
+    "test_audit_followups",
     "test_token_conservation",
     "test_memory_palace",
     "test_capacity_engine",

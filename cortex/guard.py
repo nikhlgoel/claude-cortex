@@ -50,7 +50,16 @@ LIVE_FILES = frozenset({
 SECRET_FILES = frozenset({".credentials.json", "credentials.json", "config.json", "local state",
                           "cookies", "login data"})
 
-HASH_LIMIT = 2 * 1024 * 1024
+HASH_LIMIT = 256 * 1024
+#: Files deeper than this many folders are compared by size and time only. Hashing every
+#: file of every plugin took minutes; settings and rules live at the top, where it counts.
+HASH_DEPTH = 1
+
+#: The parts of a ``.claude.json`` that identify an account and its tools. Everything else
+#: in that file (usage cache, per-project state, counters) changes whenever Claude runs.
+#: Each is compared by a hash of its value, so no token or env value is ever stored.
+STABLE_KEYS = ("oauthAccount", "mcpServers", "hasCompletedOnboarding", "userID",
+               "customApiKeyResponses")
 
 
 def store_dir():
@@ -58,8 +67,13 @@ def store_dir():
 
 
 def default_roots():
-    """Folders worth protecting: every registered profile folder plus the shared defaults."""
-    roots = [shared_claude_dir()]
+    """Folders worth protecting: every registered profile folder plus the shared defaults.
+
+    Also ``~/.claude.json``: for the default account it holds the sign-in identity and the
+    MCP servers, and it lives NEXT TO ~/.claude, not inside it, so watching the folder
+    alone would miss the most important file.
+    """
+    roots = [shared_claude_dir(), os.path.join(home(), ".claude.json")]
     appdata = os.environ.get("APPDATA")
     if appdata:
         roots.append(os.path.join(appdata, "Claude"))
@@ -71,10 +85,23 @@ def default_roots():
     unique, seen = [], set()
     for root in roots:
         key = os.path.normcase(os.path.abspath(root))
-        if key not in seen and os.path.isdir(root):
+        if key not in seen and os.path.exists(root):
             seen.add(key)
             unique.append(root)
     return unique
+
+
+def _stable_keys(path):
+    """``{key: sha256-of-value}`` for the identity-bearing parts of a .claude.json."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {"_unreadable": "1"}
+    if not isinstance(data, dict):
+        return {"_unreadable": "1"}
+    return {key: hashlib.sha256(json.dumps(data[key], sort_keys=True).encode("utf-8")).hexdigest()
+            for key in STABLE_KEYS if key in data}
 
 
 def _classify(rel_parts):
@@ -114,6 +141,19 @@ def scan(roots):
     manifest = {}
     for root in roots:
         protected, live_files, live_bytes = {}, 0, 0
+        if os.path.isfile(root):                     # a single watched file, e.g. ~/.claude.json
+            info = {"size": 0, "mtime_ns": 0}
+            if os.path.basename(root).lower() == ".claude.json":
+                info["keys"] = _stable_keys(root)
+            else:
+                try:
+                    st = os.stat(root)
+                    info = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+                except OSError:
+                    pass
+            manifest[root] = {"protected": {os.path.basename(root): info},
+                              "live": {"files": 0, "bytes": 0}}
+            continue
         for base, dirs, files in os.walk(root, followlinks=False):
             rel_base = os.path.relpath(base, root)
             rel_dir = [] if rel_base == "." else rel_base.split(os.sep)
@@ -133,12 +173,16 @@ def scan(roots):
                     st = os.stat(path)
                 except OSError:
                     continue
+                if f == ".claude.json":              # identity + MCP servers, not the churn
+                    protected["/".join(parts)] = {"size": 0, "mtime_ns": 0, "keys": _stable_keys(path)}
+                    continue
                 if _classify(parts) == "live":
                     live_files += 1
                     live_bytes += st.st_size
                     continue
                 info = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
-                if f.lower() not in SECRET_FILES and st.st_size <= HASH_LIMIT:
+                if f.lower() not in SECRET_FILES and st.st_size <= HASH_LIMIT \
+                        and len(rel_dir) <= HASH_DEPTH:
                     try:
                         info["sha256"] = _sha256(path)
                     except OSError:
@@ -179,6 +223,12 @@ def compare(before, after):
                 result["added"].append(os.path.join(root, rel))
             elif b is None:
                 result["removed"].append(os.path.join(root, rel))
+            elif "keys" in a or "keys" in b:
+                moved = sorted(k for k in set(a.get("keys", {})) | set(b.get("keys", {}))
+                               if a.get("keys", {}).get(k) != b.get("keys", {}).get(k))
+                if moved:
+                    result["changed"].append(f"{os.path.join(root, rel) if os.path.isdir(root) else root}"
+                                             f"  (changed: {', '.join(moved)})")
             elif a.get("sha256") and b.get("sha256"):
                 if a["sha256"] != b["sha256"]:
                     result["changed"].append(os.path.join(root, rel))
@@ -194,8 +244,8 @@ def verify(label):
     with open(_path(label), encoding="utf-8") as fh:
         saved = json.load(fh)
     roots = list(saved["roots"])
-    result = compare(saved["roots"], scan([r for r in roots if os.path.isdir(r)]))
-    result["missing_roots"] += [r for r in roots if not os.path.isdir(r)]
+    result = compare(saved["roots"], scan([r for r in roots if os.path.exists(r)]))
+    result["missing_roots"] += [r for r in roots if not os.path.exists(r)]
     ok = not (result["added"] or result["removed"] or result["changed"] or result["missing_roots"])
     return ok, result
 

@@ -81,12 +81,33 @@ def _inside(parent, child):
         return False
 
 
+def clean_path(value):
+    """``(cleaned, notes)`` for a folder path typed by a person.
+
+    Expands ``~`` and ``%VAR%`` / ``$VAR`` once, and removes a trailing separator (easy to
+    paste from tab completion, and the login is tied to the exact string, so one canonical
+    spelling without it is the safe one). Nothing else is rewritten: the path is NOT
+    canonicalised or case-folded. ``notes`` says what was changed so it is never silent.
+    """
+    notes = []
+    if not isinstance(value, str) or not value.strip():
+        return value, notes
+    cleaned = value.strip().strip('"')
+    expanded = os.path.expanduser(os.path.expandvars(cleaned))
+    if expanded != cleaned:
+        notes.append(f"expanded {cleaned} to {expanded}")
+        cleaned = expanded
+    if ("%" in cleaned and cleaned.count("%") >= 2) or "${" in cleaned:
+        raise _error(f"{value!r} refers to an environment variable that is not set")
+    if len(cleaned) > 3 and cleaned[-1] in ("/", "\\"):
+        cleaned = cleaned.rstrip("/\\")
+        notes.append("removed the trailing slash")
+    return cleaned, notes
+
+
 def _check_dir(label, value):
     if not isinstance(value, str) or not value:
         raise _error(f"{label}: a folder path is required")
-    if value[-1] in ("/", "\\") and len(value) > 3:
-        raise _error(f"{label}: give the path without a trailing slash ({value!r}) - the login is "
-                     f"tied to the exact path string")
     if not os.path.isabs(value) or (os.name == "nt" and not os.path.splitdrive(value)[0]):
         raise _error(f"{label}: needs a full path including the drive, got {value!r}")
     if not os.path.isdir(value):
@@ -102,6 +123,8 @@ def adopt(name, config_dir, desktop_dir=None, surfaces=None):
     """
     if not config_dir and not desktop_dir:
         raise _error("give a config folder, a desktop folder, or both")
+    config_dir = clean_path(config_dir)[0] if config_dir else config_dir
+    desktop_dir = clean_path(desktop_dir)[0] if desktop_dir else desktop_dir
     if config_dir:
         _check_dir("config dir", config_dir)
     if desktop_dir:

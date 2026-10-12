@@ -1,5 +1,64 @@
 # Changelog
 
+## 2.1.0
+
+Your own accounts first: adopt the Claude folders you already have, use them from the
+terminal, IDE extensions and Claude Desktop, and test the installer without risking them.
+
+### Added
+
+- **Adopt existing accounts in place** (`cc profile detect | adopt | surfaces | verify`).
+  Folders are registered at their exact existing path and are never moved, copied, edited,
+  repaired or deleted; `remove` only unregisters.
+- **Surfaces** - terminal, IDE extensions, Claude Desktop - chosen at install time
+  (`--surfaces`) or added later, all on the same account data. `cc desktop <name>` opens
+  Claude Desktop on a profile's own data folder.
+- **`cc guard snapshot | verify`** - proves a change touched no settings, configs or
+  credentials, including the account, MCP servers and onboarding state in `~/.claude.json`.
+- **Automatic tool routing** - one short hint per prompt toward Scrapling, Graphify, Spec Kit
+  or ECC when (and only when) the tool is installed and the prompt clearly calls for it.
+  Measured: 0 false positives on a 91-prompt quiet corpus. `CORTEX_ROUTING=off` disables it.
+- **`cc mcp add graphify | scrapling`** - registered through `claude mcp add`, never by
+  editing `.claude.json` behind Claude Code's back.
+- **Local models** (`cc local ...`, `cc offline`) - Hugging Face GGUFs on llama.cpp behind the
+  Cortex gateway, with a consent gate, resumable verified downloads, hardware-aware planning,
+  per-level reasoning budgets, and sleep/wake of the model when idle.
+- Installer launchers (`install.sh`, `install.ps1`, `install.cmd`) now share one tested
+  implementation, `install.py`, and run in a throwaway home for safe testing.
+
+### Fixed
+
+- **The default account lost its MCP servers.** With `CLAUDE_CONFIG_DIR` unset Claude Code uses
+  `~/.claude.json`; with it set, even to `~/.claude`, it uses a different file. Cortex now
+  leaves the variable unset for the default folder (launcher, IDE settings, doctor, capacity).
+- `cc ide apply` replaced all of a person's `claudeCode.environmentVariables`; it now changes
+  only Cortex's own entries.
+- `cc mcp add` rewrote `.claude.json` directly; it now goes through `claude mcp`.
+- `install.ps1` overwrote top-level settings keys (hooks, permissions), rewrote IDE
+  `settings.json` through a JSON round-trip that drops comments, and created
+  `Claude-profile-1/2` folders unasked. It is now a launcher for `install.py`.
+- The installer **downloaded and installed an executable** from a hard-coded URL with no
+  checksum when Claude Code was not found (a 404 today, and a network request in every test
+  run). Removed: it explains how to install Claude Code instead.
+- Declining the installer's prompt exited 0, so a wrapper reported success; it exits 3 now.
+  Unrecognised options are refused (exit 2) instead of silently ignored.
+- `install.cmd` hung for ~30 s at the end of every automated run (an unconditional `pause`).
+- The gateway exited when idle and left a dead local session; it now stays up and wakes the
+  model on demand. Client disconnects no longer log tracebacks, and unread request bodies no
+  longer cause connection resets on Windows.
+- Download edge cases: a 416 reply or an already-complete partial file was a dead end; finished
+  shards were fetched again; Ctrl-C printed a traceback.
+- `llama-server` flags that a given build does not know no longer stop the model from starting.
+- Two Python files were CRLF in an LF project.
+
+### Known limits (stated, not hidden)
+
+- The Desktop app's Code tab honouring `CLAUDE_CONFIG_DIR` is unverified.
+- A real `llama-server` + model + Claude Code session has not been run by the author;
+  tokens/second is unmeasured until `cc local doctor --smoke`.
+- `install.exe` and `bin/claude.exe` are small prebuilt launcher stubs with no source in this
+  repository; they only call the scripts next to them. Prefer `install.cmd` or `install.py`.
+
 ## 2.0.0
 
 A correctness release. The previous version had a working shape but several

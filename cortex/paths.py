@@ -114,6 +114,20 @@ def is_native_default(config_dir: str) -> bool:
     return norm(config_dir) == norm(os.path.join(home(), ".claude"))
 
 
+def user_config_path(config_dir: str) -> str:
+    """The file where Claude Code keeps this profile's USER config (account, MCP servers,
+    usage cache, project trust).
+
+    Inside the folder for every profile - except the native default, whose config lives
+    next to the folder in ``~/.claude.json`` because Claude Code runs it with
+    CLAUDE_CONFIG_DIR unset. Reading ``~/.claude/.claude.json`` for that account finds a
+    different, nearly empty file: no email, no usage, no MCP servers.
+    """
+    if is_native_default(config_dir):
+        return os.path.join(home(), ".claude.json")
+    return os.path.join(config_dir, ".claude.json")
+
+
 def apply_config_env(env: dict, config_dir: str) -> dict:
     """Point ``env`` at ``config_dir`` the way Claude Code expects, and return it.
 

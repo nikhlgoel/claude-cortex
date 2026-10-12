@@ -26,7 +26,8 @@ import subprocess
 import sys
 
 from . import binary, jsonfile
-from .paths import apply_config_env, canonical_dir, profile_dir, profiles_dir, shared_claude_dir
+from .paths import (apply_config_env, canonical_dir, profile_dir, profiles_dir, shared_claude_dir,
+                    user_config_path)
 
 class CortexError(Exception):
     """An operation failed for a reason worth explaining to the operator.
@@ -330,7 +331,7 @@ def seed_identity(name: str) -> bool:
 
 
 def profile_email(name: str) -> str:
-    cfg = jsonfile.read(os.path.join(profile_dir(name), ".claude.json"), {})
+    cfg = jsonfile.read(user_config_path(profile_dir(name)), {})
     account = cfg.get("oauthAccount")
     if isinstance(account, dict) and account.get("emailAddress"):
         return account["emailAddress"]

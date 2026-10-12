@@ -67,7 +67,19 @@ as capable as a cloud one.
 
 `cc offline` starts the model and gateway on demand and stops them after
 `idle_stop_minutes` (default 30) with no traffic, so a laptop does not keep gigabytes of
-VRAM pinned.
+VRAM pinned. The gateway itself stays up while the session lives: when you come back after
+the model went to sleep, the **next request wakes it** (the first reply is slower while the
+model loads; concurrent requests start it once, and a failed start is reported in the reply
+instead of a dead connection).
+
+**Downloads** are resumable: Ctrl-C stops cleanly (exit 130, with the command to resume), a
+complete leftover file is re-verified instead of re-fetched, a stale range is retried once from
+the start, and shards that already finished are not downloaded again. A Hugging Face repo that
+is not in the catalog lists its `.gguf` files so you can pick one with `--quant`.
+
+**`llama-server` flags** change between releases. Cortex asks the installed binary which flags
+it understands, leaves out optional ones it lacks, and if the model still will not start retries
+once with the minimal set (and says so) rather than failing on a flag you cannot see.
 
 ## Choosing a model for a 6 GB GPU
 

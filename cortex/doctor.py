@@ -13,7 +13,7 @@ import shutil
 
 from . import binary, jsonfile, profiles
 from .paths import (profile_dir, profiles_dir,
-                    securestorage_suffix, shared_claude_dir)
+                    securestorage_suffix, shared_claude_dir, user_config_path)
 
 OK = "ok"
 WARN = "warn"
@@ -71,7 +71,7 @@ def _check_profiles():
     issues = []
     for name in profiles.list_profiles():
         target = profile_dir(name)
-        cfg = jsonfile.read(os.path.join(target, ".claude.json"), {})
+        cfg = jsonfile.read(user_config_path(target), {})
         if not cfg.get("hasCompletedOnboarding"):
             issues.append((name, "will re-run first-run onboarding "
                                  f"(fix: cc login {name})"))

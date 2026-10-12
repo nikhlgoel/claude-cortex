@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from . import jsonfile, profiles
-from .paths import profile_dir
+from .paths import profile_dir, user_config_path
 
 KNOWN_FREE = "free"
 KNOWN_LIMITED = "limited"
@@ -67,7 +67,7 @@ def inspect(name: str, check_auth=True):
         record["detail"] = f"not signed in (run: cc login {name})"
         return record
 
-    cfg = jsonfile.read(f"{target}/.claude.json", {})
+    cfg = jsonfile.read(user_config_path(target), {})
     usage = cfg.get("cachedUsageUtilization")
 
     if not isinstance(usage, dict) or not usage:

@@ -79,6 +79,7 @@ def _get_json(url, opener, timeout=30):
         with (opener or default_opener()).open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        exc.close()
         if exc.code in (401, 403):
             raise HubError(f"{url} requires authentication (gated or private repo). Accept its "
                            f"licence on huggingface.co and set HF_TOKEN yourself; Cortex never "
@@ -215,22 +216,8 @@ def download(repo, entry, dest, endpoint=DEFAULT_ENDPOINT, opener=None, progress
                  progress=progress, auth=True, label=entry["path"])
 
 
-def fetch(url, dest, want, sha256=None, opener=None, progress=None, auth=False, label=None):
-    """Fetch ``url`` to ``dest`` (resuming ``dest + '.part'``), verify, and rename.
-
-    ``want`` is the expected byte size (0 = unknown) and ``sha256`` the expected hash
-    (None = unknown). Returns the final path. Raises HubError on any size or hash
-    mismatch, after deleting a corrupt partial file. ``auth`` sends the HF token and
-    must be True only for Hugging Face URLs.
-    """
-    label = label or url
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    part = dest + ".part"
-    have = os.path.getsize(part) if os.path.exists(part) else 0
-    if want and have > want:
-        os.unlink(part)
-        have = 0
-
+def _download_into(url, part, have, want, opener, progress, auth, label, _retry=True):
+    """Stream ``url`` into ``part``, resuming from ``have`` bytes. Raises HubError on failure."""
     req = urllib.request.Request(url, headers=_headers({"Range": f"bytes={have}-"} if have else None,
                                                        auth=auth))
     try:
@@ -248,9 +235,47 @@ def fetch(url, dest, want, sha256=None, opener=None, progress=None, auth=False, 
                     if progress:
                         progress(done, want)
     except urllib.error.HTTPError as exc:
+        exc.close()
+        if exc.code == 416 and have and _retry:
+            # The partial file does not match what the server has (the upstream file changed):
+            # throw it away and start fresh once, rather than dead-ending on every re-run.
+            os.unlink(part)
+            return _download_into(url, part, 0, want, opener, progress, auth, label, _retry=False)
         raise HubError(f"download failed: HTTP {exc.code} for {label}") from None
     except (urllib.error.URLError, OSError) as exc:
         raise HubError(f"download interrupted ({exc}); re-run the same command to resume") from None
+
+
+def fetch(url, dest, want, sha256=None, opener=None, progress=None, auth=False, label=None):
+    """Fetch ``url`` to ``dest`` (resuming ``dest + '.part'``), verify, and rename.
+
+    ``want`` is the expected byte size (0 = unknown) and ``sha256`` the expected hash
+    (None = unknown). Returns the final path. Raises HubError on any size or hash
+    mismatch, after deleting a corrupt partial file. ``auth`` sends the HF token and
+    must be True only for Hugging Face URLs.
+    """
+    label = label or url
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+
+    # A finished file from an earlier run (e.g. shard 1 of a split model whose shard 2 was
+    # interrupted) is verified and reused, not downloaded again.
+    if want and os.path.isfile(dest) and os.path.getsize(dest) == want:
+        if not sha256 or sha256_file(dest) == sha256.lower():
+            if progress:
+                progress(want, want)
+            return dest
+        os.unlink(dest)                  # same size, different content: not the file we want
+
+    part = dest + ".part"
+    have = os.path.getsize(part) if os.path.exists(part) else 0
+    if want and have > want:
+        os.unlink(part)
+        have = 0
+
+    # A partial file that is already the full size was cut off AFTER the last byte (before
+    # verification). Asking the server for bytes=<size>- would be a 416, so skip the network.
+    if not (want and have == want):
+        _download_into(url, part, have, want, opener, progress, auth, label)
 
     size = os.path.getsize(part)
     if want and size != want:

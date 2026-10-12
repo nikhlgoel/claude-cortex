@@ -217,6 +217,15 @@ def apply_ot_acr_compression(req_data, max_retained_turns=2, tombstone_threshold
 class CortexGatewayHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def handle(self):
+        # A client that closes (or resets) a keep-alive connection is normal - Claude Code does
+        # it constantly, and on Windows it surfaces as ConnectionResetError/AbortedError. The
+        # default server prints a full traceback for each, burying real problems in the log.
+        try:
+            super().handle()
+        except (ConnectionError, TimeoutError):
+            pass
+
     def log_message(self, format, *args):
         # Silence routine request logging to prevent console clutter
         if os.environ.get("CORTEX_DEBUG") == "1":
@@ -671,21 +680,23 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
         self.relay(upstream_req, "Anthropic")
 
 def _idle_watchdog():
-    """Stop the model server and exit after ``idle_stop_minutes`` with no traffic.
+    """Put the MODEL to sleep after ``idle_stop_minutes`` with no traffic.
 
-    A laptop should not keep gigabytes of VRAM and RAM pinned after the last session
-    closed. ``cc offline`` starts everything again on demand.
+    A laptop should not keep gigabytes of VRAM and RAM pinned through a long break. Only the
+    model server stops: this gateway stays up (it is tiny) so Claude Code's connection never
+    breaks, and the next request wakes the model on demand. It used to exit as well, which
+    turned a coffee break into a dead session.
     """
-    from cortex.local import serve
-    minutes = LOCAL[0].cfg.get("idle_stop_minutes") or 0
-    if minutes <= 0:
+    from cortex.local import gateway_local, serve
+    if not (LOCAL[0].cfg.get("idle_stop_minutes") or 0):
         return
     while True:
         time.sleep(30)
-        if LOCAL[0].idle_seconds() >= minutes * 60:
-            serve.stop("server")
-            serve._clear_state("gateway")
-            os._exit(0)
+        try:
+            gateway_local.sleep_model_if_idle(LOCAL[0], lambda: serve.is_ours("server"),
+                                              lambda: serve.stop("server"))
+        except Exception:
+            pass                                  # a failed check must never take the gateway down
 
 
 def main():

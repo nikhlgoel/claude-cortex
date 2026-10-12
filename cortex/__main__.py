@@ -15,7 +15,7 @@ from . import capacity, doctor, ghidra, ide, integrity, launcher, mcp, models, p
 from .profiles import CortexError
 from .paths import profile_dir
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 # Recognized top-level commands, used for the "did you mean" hint.
 TOP_LEVEL_COMMANDS = (
@@ -234,15 +234,24 @@ def _profile_detect():
 
 def _profile_adopt(rest):
     from . import registry
-    name = profiles.normalize_name(next((a for a in rest if not a.startswith("-")), ""))
+    raw = next((a for a in rest if not a.startswith("-")), "")
+    name = profiles.normalize_name(raw)
     config, desktop_dir = _opt(rest, "--config"), _opt(rest, "--desktop")
     if not name or not (config or desktop_dir):
         print('Usage: cc profile adopt <name> [--config "<folder>"] [--desktop "<folder>"]',
               file=sys.stderr)
+        print("  e.g.   cc profile adopt work --config \"%USERPROFILE%\\.claude-work\"", file=sys.stderr)
         return 2
     if name in TOP_LEVEL_COMMANDS or tools.is_retired(name):
         print(f"'{name}' is a Cortex command and cannot be a profile name.", file=sys.stderr)
+        print(f"    Pick another name, e.g. '{name}-acct'.", file=sys.stderr)
         return 2
+    if name != raw.strip():
+        print(f"Note: using '{name}' (adjusted from '{raw.strip()}').")
+    for label, value in (("config", config), ("desktop", desktop_dir)):
+        if value:
+            for note in registry.clean_path(value)[1]:
+                print(f"Note: {label} folder: {note}.")
     surfaces = _opt(rest, "--surfaces")
     registry.adopt(name, config, desktop_dir, surfaces.split(",") if surfaces else None)
     print(f"Registered '{name}'. No folder was moved, copied or modified.")
@@ -252,8 +261,13 @@ def _profile_adopt(rest):
 
 def _profile_verify(rest):
     name = profiles.normalize_name(next((a for a in rest if not a.startswith("-")), ""))
+    if not name:
+        print("Usage: cc profile verify <name>", file=sys.stderr)
+        print(f"  Profiles: {', '.join(profiles.list_profiles()) or 'none yet (see: cc profile detect)'}",
+              file=sys.stderr)
+        return 2
     if name not in profiles.list_profiles():
-        print(f"Profile '{name or '?'}' does not exist. Available: {', '.join(profiles.list_profiles()) or 'none'}",
+        print(f"Profile '{name}' does not exist. Available: {', '.join(profiles.list_profiles()) or 'none'}",
               file=sys.stderr)
         return 1
     status = profiles.auth_status(profile_dir(name), refresh=True)
@@ -294,6 +308,10 @@ def _profile_surfaces(rest):
 def _profile_show(rest):
     from . import registry
     name = profiles.normalize_name(next((a for a in rest if not a.startswith("-")), ""))
+    if not name or name not in profiles.list_profiles():
+        print(f"Profile '{name or '?'}' does not exist. Available: "
+              f"{', '.join(profiles.list_profiles()) or 'none yet (see: cc profile detect)'}", file=sys.stderr)
+        return 1
     entry = registry.lookup(name)
     print(f"profile       : {name}")
     print(f"CLI config    : {profile_dir(name)} ({'adopted, left untouched' if registry.is_adopted(name) else 'managed by Cortex'})")
