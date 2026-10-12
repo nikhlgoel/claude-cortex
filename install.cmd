@@ -1,81 +1,71 @@
 @echo off
-setlocal EnableDelayedExpansion
-title Claude Cortex Windows Installer
-color 0B
+setlocal EnableExtensions
+REM ----------------------------------------------------------------------------
+REM Claude Cortex installer (Windows, double-click or cmd.exe)
+REM
+REM A thin launcher: finds Python and runs install.py, which holds all the logic.
+REM   install.cmd --dry-run
+REM   install.cmd --yes --surfaces terminal,desktop
+REM Needs Python 3.8+. Set CORTEX_PYTHON to use a specific interpreter.
+REM Exit codes: 0 done, 2 bad option, 3 the safety prompt stopped it.
+REM ----------------------------------------------------------------------------
 
-echo ======================================================================
-echo           Installing Claude Cortex for Windows
-echo ======================================================================
-echo.
+set "HERE=%~dp0"
+set "PYRUN="
+set "RC=0"
 
-set "SCRIPT_DIR=%~dp0"
-cd /d "%SCRIPT_DIR%"
-
-REM Step 1: Execute PowerShell Installer with ExecutionPolicy Bypass
-echo [1/3] Checking PowerShell execution...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue; Unblock-File -Path '%SCRIPT_DIR%*.*' -ErrorAction SilentlyContinue; & '%SCRIPT_DIR%install.ps1' %* }"
-set PS_EXIT=%ERRORLEVEL%
-
-if %PS_EXIT% equ 0 (
-    echo.
-    echo ======================================================================
-    echo   [SUCCESS] Claude Cortex installed successfully via PowerShell!
-    echo ======================================================================
-    goto :DONE
+if defined CORTEX_PYTHON (
+    "%CORTEX_PYTHON%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" >nul 2>&1
+    if errorlevel 1 (
+        echo error: CORTEX_PYTHON="%CORTEX_PYTHON%" is not a working Python 3.8+.
+        set "RC=1"
+        goto :done
+    )
+    set PYRUN="%CORTEX_PYTHON%"
+    goto :run
 )
 
-REM Exit code 3 means the safety guard stopped the run (declined, or no operator
-REM present). That is a deliberate stop, not a failure - do NOT fall back to the
-REM Python installer, or the confirmation prompt is trivially bypassed.
-if %PS_EXIT% equ 3 (
-    echo.
-    echo Installation was cancelled. Nothing was changed.
-    goto :DONE
+REM A real one-liner is run on purpose: the Microsoft Store "python.exe" stub exists on
+REM PATH but only prints an advert.
+where py >nul 2>&1
+if not errorlevel 1 (
+    py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" >nul 2>&1
+    if not errorlevel 1 set "PYRUN=py -3"
 )
-
-echo.
-echo [WARNING] PowerShell installation exited with status code %PS_EXIT%.
-echo Attempting fallback installation via Python...
-echo.
-
-REM Step 2: Try Python fallback if PowerShell was blocked or failed
-where python.exe >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    echo [2/3] Launching installer via Python...
-    python "%SCRIPT_DIR%install.py" %*
-    if !ERRORLEVEL! equ 0 (
-        echo.
-        echo ======================================================================
-        echo   [SUCCESS] Claude Cortex installed successfully via Python!
-        echo ======================================================================
-        goto :DONE
+if not defined PYRUN (
+    where python >nul 2>&1
+    if not errorlevel 1 (
+        python -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" >nul 2>&1
+        if not errorlevel 1 set "PYRUN=python"
     )
 )
-
-where py.exe >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    echo [3/3] Launching installer via Py launcher...
-    py "%SCRIPT_DIR%install.py" %*
-    if !ERRORLEVEL! equ 0 (
-        echo.
-        echo ======================================================================
-        echo   [SUCCESS] Claude Cortex installed successfully via Py launcher!
-        echo ======================================================================
-        goto :DONE
-    )
+if not defined PYRUN (
+    echo error: Python 3.8 or newer is required and was not found.
+    echo        Install it from https://www.python.org/downloads/ ^(tick "Add to PATH"^),
+    echo        or set CORTEX_PYTHON to the interpreter you want.
+    set "RC=1"
+    goto :done
 )
 
-echo.
-echo ======================================================================
-echo [ERROR] Installation could not be completed automatically.
-echo Please run either:
-echo   powershell -ExecutionPolicy Bypass -File .\install.ps1
-echo or:
-echo   python install.py
-echo ======================================================================
+:run
+%PYRUN% "%HERE%install.py" %*
+set "RC=%ERRORLEVEL%"
 
-:DONE
+if "%RC%"=="3" (
+    echo.
+    echo Stopped at the safety prompt. Nothing was changed.
+) else if not "%RC%"=="0" (
+    echo.
+    echo The installer exited with code %RC%. See the messages above.
+)
+
+:done
+REM Keep the window open only when it was double-clicked. Explorer starts a script as
+REM   cmd.exe /c ""C:\path\install.cmd" "
+REM (doubled quote); a terminal or automation never produces that form, and a pause there
+REM would hang the caller.
+set "RAW=%CMDCMDLINE:"=Q%"
+if "%RAW:/c QQ=%"=="%RAW%" exit /b %RC%
 echo.
-echo Press any key to close this window...
-pause >nul
-exit /b %PS_EXIT%
+pause
+exit /b %RC%

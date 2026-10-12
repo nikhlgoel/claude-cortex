@@ -12,7 +12,6 @@ import json
 import time
 import zipfile
 import tarfile
-import urllib.request
 from pathlib import Path
 
 # Exit code meaning "the safety guard stopped this run". Callers such as
@@ -169,7 +168,7 @@ def confirm_install(bin_dir, claude_dir, profiles_dir):
 
     if answer != "INSTALL":
         print("  Aborted. Nothing was changed.")
-        return False
+        sys.exit(GUARD_DECLINED_EXIT)      # not 0: a caller must not report "installed"
     return True
 
 
@@ -205,7 +204,13 @@ def choose_surfaces():
     except (EOFError, KeyboardInterrupt):
         return ["terminal"]
     names = {"1": "terminal", "2": "ide", "3": "desktop"}
-    picked = [names[c] for c in answer.replace(" ", ",").split(",") if c in names]
+    tokens = [c for c in answer.replace(" ", ",").split(",") if c]
+    picked = [names[c] for c in tokens if c in names]
+    unknown = [c for c in tokens if c not in names]
+    if unknown or not picked:
+        print(f"  Did not understand '{answer}' (use numbers 1, 2, 3). "
+              f"{'Using ' + ', '.join(picked) if picked else 'Using terminal only'}; "
+              f"add more any time with: cc profile surfaces <name> terminal,ide,desktop")
     return surfaces.parse(",".join(picked)) if picked else ["terminal"]
 
 
@@ -225,9 +230,49 @@ def skip_primary_profile(profiles_dir):
         return False
 
 
+KNOWN_FLAGS = {"--yes", "-y", "--dry-run", "--surfaces", "--no-primary-profile",
+               "--help", "-h"}
+USAGE = """usage: install.py [--dry-run] [--yes] [--surfaces terminal,ide,desktop]
+                  [--no-primary-profile]
+
+  --dry-run               show what would change, change nothing
+  --yes, -y               skip the typed confirmation (CORTEX_SANDBOX=1 also does)
+  --surfaces LIST         where profiles will be used: terminal, ide, desktop (any mix)
+  --no-primary-profile    do not create the extra 'main' profile
+"""
+
+
+def check_arguments(argv):
+    """Exit 2 on a flag this installer does not know, instead of ignoring it silently.
+
+    Silently ignoring `--profile=work` or a typo'd `--dry_run` would run a real install
+    the person did not ask for.
+    """
+    skip = False
+    for i, arg in enumerate(argv):
+        if skip:
+            skip = False
+            continue
+        if arg == "--surfaces":
+            if i + 1 >= len(argv):
+                print("  --surfaces needs a value, e.g. --surfaces terminal,desktop")
+                sys.exit(2)
+            skip = True
+        elif arg.startswith("--surfaces="):
+            continue
+        elif arg not in KNOWN_FLAGS:
+            print(f"  Unknown option: {arg}")
+            print()
+            print(USAGE)
+            sys.exit(2)
+    if "--help" in argv or "-h" in argv:
+        print(USAGE)
+        sys.exit(0)
+
+
 def main():
+    check_arguments(sys.argv[1:])
     is_windows = (sys.platform == "win32")
-    is_mac = (sys.platform == "darwin")
     home = Path.home()
     script_dir = Path(__file__).resolve().parent
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -369,20 +414,12 @@ def main():
                     pass
 
     if not preserved and not real_binary_target.exists():
-        print("  Downloading official Claude binary from Anthropic CDN...")
-        try:
-            if is_windows:
-                url = "https://downloads.claude.ai/claude-code-releases/latest/win32-x64/claude.exe"
-            elif is_mac:
-                url = "https://downloads.claude.ai/claude-code-releases/latest/darwin-x64/claude"
-            else:
-                url = "https://downloads.claude.ai/claude-code-releases/latest/linux-x64/claude"
-            urllib.request.urlretrieve(url, real_binary_target)
-            if not is_windows:
-                real_binary_target.chmod(0o755)
-            print(f"  ✓ Downloaded latest official binary to: {real_binary_target}")
-        except Exception as e:
-            print(f"  ⚠ Note on binary download: {e}")
+        # Never downloaded here. This used to fetch an executable from a hard-coded URL with
+        # no checksum and install it as the binary the wrapper runs; the URL is now a 404, and
+        # even a working one would be an unverified program fetched without being asked.
+        print("  ! Claude Code itself was not found, so there is nothing to wrap yet.")
+        print("    Install it first (https://claude.ai/download, or: npm i -g @anthropic-ai/claude-code),")
+        print("    then run `cc doctor`. Cortex does not download programs for you.")
 
     # 4. Nothing to clean. This step used to delete ~/.claude/downloads and RENAME the
     # official %LOCALAPPDATA%\Programs\claude\claude.exe to .exe.bak - moving aside the

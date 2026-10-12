@@ -8,6 +8,7 @@ at a temp folder, the sandbox flag is on, and - on Windows - the REAL user PATH 
 registry is read before and after to prove it was not touched.
 """
 
+import io
 import json
 import os
 import shutil
@@ -155,6 +156,150 @@ class TestSurfaceChoice(InstallerSandbox):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("cc ide apply", result.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.roaming, "Code")))
+
+
+class TestNoNetwork(unittest.TestCase):
+    def test_the_installer_never_downloads_anything(self):
+        """An installer that fetches and runs an executable unasked is a supply-chain hole,
+        and it made every test run hit the network. Keep the capability out of the source."""
+        with open(INSTALL, encoding="utf-8") as fh:
+            source = fh.read()
+        for needle in ("urllib", "urlretrieve", "urlopen", "requests", "curl ", "wget"):
+            self.assertNotIn(needle, source, needle)
+
+    def test_a_missing_claude_is_explained_not_downloaded(self):
+        with tempfile.TemporaryDirectory(prefix="cortex-nodl-") as root:
+            home = os.path.join(root, "home")
+            os.makedirs(home)
+            env = dict(os.environ, HOME=home, USERPROFILE=home, APPDATA=os.path.join(root, "r"),
+                       LOCALAPPDATA=os.path.join(root, "l"), CORTEX_SANDBOX="1",
+                       PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+            env["PATH"] = os.path.dirname(sys.executable)   # no claude anywhere on PATH
+            proc = subprocess.run([sys.executable, INSTALL, "--yes", "--surfaces", "terminal"],
+                                  env=env, capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=120, stdin=subprocess.DEVNULL)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("Cortex does not download programs", proc.stdout)
+            self.assertFalse(os.path.exists(os.path.join(home, ".local", "bin", "claude.real.exe")))
+            self.assertFalse(os.path.exists(os.path.join(home, ".local", "bin", "claude.real")))
+
+
+class TestTypedPrompt(unittest.TestCase):
+    """The typed confirmation needs a terminal, which a subprocess test cannot provide."""
+
+    def run_prompt(self, answer):
+        import importlib.util
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("cortex_install_under_test", INSTALL)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        env = {k: v for k, v in os.environ.items() if k != "CORTEX_SANDBOX"}
+        fake_stdin = mock.Mock()
+        fake_stdin.isatty.return_value = True
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True),                 mock.patch.object(sys, "argv", ["install.py"]),                 mock.patch.object(sys, "stdin", fake_stdin),                 mock.patch("builtins.input", return_value=answer),                 mock.patch("sys.stdout", out):
+            try:
+                result = module.confirm_install(__import__("pathlib").Path("b"),
+                                                __import__("pathlib").Path("c"),
+                                                __import__("pathlib").Path("p"))
+            except SystemExit as stop:
+                return stop.code, out.getvalue()
+        return result, out.getvalue()
+
+    def test_a_wrong_answer_stops_with_the_guard_code_not_success(self):
+        code, text = self.run_prompt("yes please")
+        self.assertEqual(code, 3, text)
+        self.assertIn("Nothing was changed", text)
+
+    def test_the_exact_word_continues(self):
+        result, _ = self.run_prompt("INSTALL")
+        self.assertIs(result, True)
+
+
+class TestArguments(InstallerSandbox):
+    def test_an_unknown_flag_is_refused_and_nothing_is_installed(self):
+        for flag in ("--profiles=work", "--dry_run", "--surface"):
+            result = self.install("--yes", flag)
+            self.assertEqual(result.returncode, 2, flag)
+            self.assertIn("Unknown option", result.stdout)
+        self.assertEqual(os.listdir(self.home), [])
+
+    def test_surfaces_without_a_value_is_refused(self):
+        result = self.install("--yes", "--surfaces")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(os.listdir(self.home), [])
+
+    def test_help_prints_usage_and_changes_nothing(self):
+        result = self.install("--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("usage: install.py", result.stdout)
+        self.assertEqual(os.listdir(self.home), [])
+
+    def test_the_equals_form_of_surfaces_is_accepted(self):
+        result = self.install("--yes", "--surfaces=terminal")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_without_an_operator_or_opt_in_it_stops_with_the_guard_exit_code(self):
+        env = self.env()
+        env.pop("CORTEX_SANDBOX")
+        proc = subprocess.run([sys.executable, INSTALL], env=env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=60,
+                              stdin=subprocess.DEVNULL)
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        self.assertEqual(os.listdir(self.home), [])
+
+
+class TestInteractiveChoice(unittest.TestCase):
+    """The question the installer asks when --surfaces is not given."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cortex_install_under_test", INSTALL)
+        cls.install = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.install)
+
+    def ask(self, answer, argv=("install.py",), tty=True, sandbox=False):
+        from unittest import mock
+        import io
+        env = {"CORTEX_SANDBOX": "1"} if sandbox else {}
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", list(argv)), mock.patch.dict(os.environ, env), \
+                mock.patch.object(sys.stdin, "isatty", return_value=tty), \
+                mock.patch("builtins.input", return_value=answer), mock.patch("sys.stdout", out):
+            if not sandbox:
+                os.environ.pop("CORTEX_SANDBOX", None)
+            return self.install.choose_surfaces(), out.getvalue()
+
+    def test_numbers_pick_surfaces(self):
+        self.assertEqual(self.ask("1,3")[0], ["terminal", "desktop"])
+        self.assertEqual(self.ask("2")[0], ["ide"])
+        self.assertEqual(self.ask("1 2 3")[0], ["terminal", "ide", "desktop"])
+
+    def test_pressing_enter_means_terminal_only(self):
+        self.assertEqual(self.ask("")[0], ["terminal"])
+
+    def test_an_answer_that_is_not_understood_says_so_instead_of_silently_choosing(self):
+        surfaces, out = self.ask("desktop please")
+        self.assertEqual(surfaces, ["terminal"])
+        self.assertIn("Did not understand", out)
+        self.assertIn("cc profile surfaces", out)
+
+    def test_a_partly_understood_answer_keeps_what_it_understood_and_says_what_it_ignored(self):
+        surfaces, out = self.ask("3 9")
+        self.assertEqual(surfaces, ["desktop"])
+        self.assertIn("Did not understand", out)
+
+    def test_no_terminal_means_no_question(self):
+        self.assertEqual(self.ask("1,2,3", tty=False)[0], ["terminal"])
+
+    def test_the_flag_wins_over_asking(self):
+        self.assertEqual(self.ask("1", argv=("install.py", "--surfaces", "desktop,ide"))[0],
+                         ["ide", "desktop"])
+
+    def test_yes_and_sandbox_never_ask(self):
+        self.assertEqual(self.ask("3", argv=("install.py", "--yes"))[0], ["terminal"])
+        self.assertEqual(self.ask("3", sandbox=True)[0], ["terminal"])
 
 
 class TestPrimaryProfile(InstallerSandbox):
