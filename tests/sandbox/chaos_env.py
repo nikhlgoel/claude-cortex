@@ -10,7 +10,6 @@ hang, no write outside the sandbox. A traceback in any of these states tells the
 operator nothing actionable and makes a routine problem look like corruption.
 """
 
-import json
 import os
 import subprocess
 import sys

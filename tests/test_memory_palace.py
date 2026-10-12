@@ -182,7 +182,6 @@ class TestMemoryPalace(unittest.TestCase):
         latencies.sort()
         p50 = latencies[len(latencies) // 2]
         p95 = latencies[int(len(latencies) * 0.95)]
-        p99 = latencies[-1]
 
         self.assertLess(p50, 15.0 * LATENCY_SCALE, f"P50 latency exceeded 15ms: {p50:.2f}ms")
         self.assertLess(p95, 30.0 * LATENCY_SCALE, f"P95 latency exceeded 30ms: {p95:.2f}ms")

@@ -51,7 +51,8 @@ class TestTokenConservation(unittest.TestCase):
             [sys.executable, script_path],
             input=payload,
             text=True,
-            capture_output=True
+            capture_output=True,
+            timeout=120,   # a hung hook fails this test instead of hanging the suite
         )
         latency_ms = (time.perf_counter() - t0) * 1000.0
         return proc.returncode, proc.stdout, proc.stderr, latency_ms

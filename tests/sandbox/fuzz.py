@@ -23,7 +23,6 @@ Run with a seed to reproduce a failure:  fuzz.py --seed 12345
 """
 
 import argparse
-import itertools
 import json
 import os
 import random
