@@ -271,6 +271,7 @@ not declare. See [tests/sandbox/README.md](tests/sandbox/README.md).
 - [Tool routing](docs/TOOL_ROUTING.md) - Scrapling, Graphify, Spec Kit and ECC picked automatically
 - [Local models](docs/LOCAL_MODELS.md) - Hugging Face GGUFs, llama.cpp, reasoning levels
 - [Framework options](docs/FRAMEWORK_OPTIONS.md) - five directions for what Cortex becomes
+- [Palace, Studio and Swarm plan](docs/PALACE_AND_STUDIO_PLAN.md) - layered memory, a Claude Code mod, subagents (design only)
 - [Handover](HANDOVER.md) - installing it yourself, with verification steps
 - [Ghidra audit](tools/ghidra/AUDIT.md) - supply-chain findings and residual risk
 - [Test harness](tests/sandbox/README.md) - scenarios, fuzzing, mutation testing
