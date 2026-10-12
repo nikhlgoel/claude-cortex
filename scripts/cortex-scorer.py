@@ -206,10 +206,11 @@ def combine(metrics):
     points it added or removed. Metrics that were not measured are absent from
     ``metrics`` and therefore contribute nothing.
 
-    TODO(human): this is the policy. The defaults below are a starting point -
-    decide how much each signal should cost or earn. For example: is a missing
-    test worth -20, or should it dominate? Should a destructive pattern ever be
-    allowed to be outweighed by good test coverage?
+    This is the policy, and the weights below are defaults meant to be tuned to taste:
+    how much each signal costs or earns (is a missing test worth -20, or should it
+    dominate?) and whether good test coverage may outweigh a destructive pattern (today
+    it can, partly - the breakdown always shows each signal's points, so a low
+    "recovery" figure is never hidden by a high total).
     """
     parts = {}
 
