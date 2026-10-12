@@ -408,6 +408,49 @@ class TestCommands(Sandbox):
         self.assertEqual(tree_hash(studio), before)
         self.assertEqual(registry.load(), {})
 
+    def test_surfaces_can_be_added_later_without_touching_the_account_data(self):
+        folder = self.make_account("a")
+        desktop_dir = self.make_account("a-desktop", login=False)
+        before = (tree_hash(folder), tree_hash(desktop_dir))
+        registry.adopt("alpha", folder, desktop_dir, surfaces=["terminal"])
+        with mock.patch("builtins.print"):
+            self.assertEqual(cli.main(["profile", "surfaces", "alpha", "terminal,desktop"]), 0)
+        entry = registry.lookup("alpha")
+        self.assertEqual(entry["surfaces"], ["terminal", "desktop"])
+        # only the Desktop MCP config was added; nothing else in either folder changed
+        self.assertTrue(os.path.isfile(os.path.join(desktop_dir, "claude_desktop_config.json")))
+        os.unlink(os.path.join(desktop_dir, "claude_desktop_config.json"))
+        self.assertEqual((tree_hash(folder), tree_hash(desktop_dir)), before)
+
+    def test_surfaces_dry_run_records_and_writes_nothing(self):
+        folder = self.make_account("a")
+        desktop_dir = self.make_account("a-desktop", login=False)
+        registry.adopt("alpha", folder, desktop_dir, surfaces=["terminal"])
+        with mock.patch("builtins.print"):
+            self.assertEqual(cli.main(["profile", "surfaces", "alpha", "desktop", "--dry-run"]), 0)
+        self.assertEqual(registry.lookup("alpha")["surfaces"], ["terminal"])
+        self.assertFalse(os.path.exists(os.path.join(desktop_dir, "claude_desktop_config.json")))
+
+    def test_surfaces_rejects_unknown_names_and_unknown_profiles(self):
+        registry.adopt("alpha", self.make_account("a"))
+        with mock.patch("builtins.print"), mock.patch("sys.stderr", io.StringIO()):
+            self.assertEqual(cli.main(["profile", "surfaces", "alpha", "toaster"]), 2)
+            self.assertEqual(cli.main(["profile", "surfaces", "ghost", "desktop"]), 2)
+
+    def test_surfaces_are_shown_when_no_change_is_asked_for(self):
+        registry.adopt("alpha", self.make_account("a"))
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.assertEqual(cli.main(["profile", "surfaces", "alpha"]), 0)
+        self.assertIn("terminal", out.getvalue())
+
+    def test_a_cortex_managed_profile_can_have_surfaces_too(self):
+        os.makedirs(os.path.join(self.profiles_root, "managed"))
+        with mock.patch("builtins.print"):
+            self.assertEqual(cli.main(["profile", "surfaces", "managed", "terminal,ide"]), 0)
+        self.assertEqual(registry.lookup("managed")["surfaces"], ["terminal", "ide"])
+        self.assertFalse(registry.is_adopted("managed"))
+
     def test_desktop_and_guard_are_reserved_command_names(self):
         self.assertIn("desktop", cli.TOP_LEVEL_COMMANDS)
         self.assertIn("guard", cli.TOP_LEVEL_COMMANDS)

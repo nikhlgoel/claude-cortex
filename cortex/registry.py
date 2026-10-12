@@ -151,9 +151,13 @@ def set_surfaces(name, surfaces):
     if bad:
         raise _error(f"unknown surface {', '.join(bad)}; choose from {', '.join(SURFACES)}")
 
+    os.makedirs(profiles_dir(), exist_ok=True)
+
     def apply(data):
-        entry = (data.get("profiles") or {}).get(name)
-        if not entry:
-            raise _error(f"profile '{name}' is not registered")
+        data.setdefault("schema", SCHEMA)
+        table = data.setdefault("profiles", {})
+        # A Cortex-managed profile has no entry yet; its surfaces are still worth recording.
+        entry = table.setdefault(name, {"config_dir": None, "desktop_dir": None,
+                                        "adopted": date.today().isoformat()})
         entry["surfaces"] = sorted(set(surfaces), key=SURFACES.index)
     jsonfile.update(_path(), apply, {})

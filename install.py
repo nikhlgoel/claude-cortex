@@ -30,37 +30,10 @@ def register_desktop_mcp(cfg_path, command, script):
     left exactly as it is, and the user is told what to add by hand. Otherwise a
     ``.bak`` is kept and the write is atomic. Returns True if the file was written.
     """
-    cfg = {}
-    if cfg_path.exists():
-        try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            if not isinstance(cfg, dict):
-                raise ValueError("top level is not an object")
-        except (OSError, ValueError):
-            print(f"  ! Left {cfg_path} untouched: it is not valid JSON, so it was "
-                  f"not rewritten.")
-            print(f"    Add an mcpServers entry named 'claude-cortex' "
-                  f"(command: {command}, args: [{script}]) by hand.")
-            return False
-
-    servers = cfg.setdefault("mcpServers", {})
-    if not isinstance(servers, dict):
-        print(f"  ! Left {cfg_path} untouched: 'mcpServers' is not an object.")
-        return False
-    servers["claude-cortex"] = {"command": command, "args": [script]}
-
-    try:
-        if cfg_path.exists():
-            shutil.copy2(cfg_path, str(cfg_path) + ".bak")
-        tmp = str(cfg_path) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-        os.replace(tmp, cfg_path)
-    except OSError as exc:
-        print(f"  ! Could not update {cfg_path}: {exc}")
-        return False
-    return True
+    # One implementation, shared with `cc profile surfaces` (cortex/surfaces.py).
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from cortex import surfaces
+    return surfaces.register_desktop_mcp(cfg_path, command, script)
 
 
 def merge_settings(src_path, dest_path):
@@ -200,6 +173,58 @@ def confirm_install(bin_dir, claude_dir, profiles_dir):
     return True
 
 
+def choose_surfaces():
+    """Where the person will use Cortex: from --surfaces, else asked, else terminal only.
+
+    Any mix is allowed and more can be added later with `cc profile surfaces`; the choice
+    only controls what the installer touches, never which account or data is used.
+    """
+    argv = sys.argv[1:]
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from cortex import surfaces
+    given = None
+    for i, arg in enumerate(argv):
+        if arg == "--surfaces" and i + 1 < len(argv):
+            given = argv[i + 1]
+        elif arg.startswith("--surfaces="):
+            given = arg.split("=", 1)[1]
+    if given is not None:
+        try:
+            return surfaces.parse(given)
+        except ValueError as exc:
+            print(f"  {exc}")
+            sys.exit(2)
+    interactive = (sys.stdin.isatty() and "--yes" not in argv and "-y" not in argv
+                   and os.environ.get("CORTEX_SANDBOX") != "1")
+    if not interactive:
+        return ["terminal"]
+    print("  Where will you use Cortex profiles?  (you can add more later)")
+    print("    1) terminal      2) IDE extensions (VS Code, Antigravity...)      3) Claude Desktop")
+    try:
+        answer = input("  Choose, e.g. 1,3  [1]: ").strip() or "1"
+    except (EOFError, KeyboardInterrupt):
+        return ["terminal"]
+    names = {"1": "terminal", "2": "ide", "3": "desktop"}
+    picked = [names[c] for c in answer.replace(" ", ",").split(",") if c in names]
+    return surfaces.parse(",".join(picked)) if picked else ["terminal"]
+
+
+def skip_primary_profile(profiles_dir):
+    """True when the 'main' profile should not be created.
+
+    It is a copy/link set of ~/.claude with no login of its own; once the person has
+    adopted their real account folders it only adds a confusing extra profile.
+    """
+    if "--no-primary-profile" in sys.argv[1:]:
+        return True
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from cortex import registry
+        return bool(registry.names())
+    except Exception:
+        return False
+
+
 def main():
     is_windows = (sys.platform == "win32")
     is_mac = (sys.platform == "darwin")
@@ -214,6 +239,9 @@ def main():
 
     if not confirm_install(bin_dir, claude_dir, profiles_dir):
         return
+
+    surface_list = choose_surfaces()
+    skip_primary = skip_primary_profile(profiles_dir)
 
     print_header(f"Installing Claude Cortex ({sys.platform})")
     print(f"Source Directory: {script_dir}")
@@ -471,125 +499,102 @@ def main():
             else:
                 shutil.copy2(sp, dp)
 
-    # Setup profile
-    primary_prof = "main"
-    pdir = profiles_dir / primary_prof
-    pdir.mkdir(parents=True, exist_ok=True)
-    (profiles_dir / "current_profile").write_text(primary_prof, encoding="utf-8")
-    (pdir / ".profile_mode").write_text("synced", encoding="utf-8")
+    # Setup profile. Skipped when the person has adopted real account folders (or asked
+    # for no primary profile): the 'main' profile below is a COPY/link set of ~/.claude
+    # that has no login of its own, and an adopted profile is what they actually use.
+    if skip_primary:
+        print("  - Skipped the primary 'main' profile (adopted profiles are in use, or --no-primary-profile).")
+    else:
+        primary_prof = "main"
+        pdir = profiles_dir / primary_prof
+        pdir.mkdir(parents=True, exist_ok=True)
+        (profiles_dir / "current_profile").write_text(primary_prof, encoding="utf-8")
+        (pdir / ".profile_mode").write_text("synced", encoding="utf-8")
 
-    if user_claude_json.exists():
-        shutil.copy2(user_claude_json, pdir / ".claude.json")
+        if user_claude_json.exists():
+            shutil.copy2(user_claude_json, pdir / ".claude.json")
 
-    shared_items = [
-        "projects", "file-history", "history.jsonl", "commands",
-        "skills", "rules", "plugins", "settings.json", "mcp-configs",
-        "session-env", "shell-snapshots", "ide", "palace"
-    ]
-    for s_item in shared_items:
-        src_item = claude_dir / s_item
-        dst_item = pdir / s_item
-        if src_item.exists() and not dst_item.exists():
-            try:
-                # settings.json is COPIED, never linked: Claude Code writes it when
-                # you change /config or /model, and through a link those writes
-                # either leak into every other profile or are lost (see profiles.py).
-                if s_item == "settings.json":
-                    shutil.copy2(src_item, dst_item)
-                elif is_windows:
+        shared_items = [
+            "projects", "file-history", "history.jsonl", "commands",
+            "skills", "rules", "plugins", "settings.json", "mcp-configs",
+            "session-env", "shell-snapshots", "ide", "palace"
+        ]
+        for s_item in shared_items:
+            src_item = claude_dir / s_item
+            dst_item = pdir / s_item
+            if src_item.exists() and not dst_item.exists():
+                try:
+                    # settings.json is COPIED, never linked: Claude Code writes it when
+                    # you change /config or /model, and through a link those writes
+                    # either leak into every other profile or are lost (see profiles.py).
+                    if s_item == "settings.json":
+                        shutil.copy2(src_item, dst_item)
+                    elif is_windows:
+                        if src_item.is_dir():
+                            # A junction needs no privilege. The old `mklink /J` call never
+                            # checked its result, so when it failed nothing raised, the
+                            # copy fallback below never ran, and the profile silently
+                            # lacked the shared directory while the installer reported
+                            # "full data synchronization".
+                            import _winapi
+                            _winapi.CreateJunction(str(src_item), str(dst_item))
+                        else:
+                            shutil.copy2(src_item, dst_item)
+                    else:
+                        os.symlink(src_item, dst_item)
+                except (OSError, ImportError, AttributeError):
                     if src_item.is_dir():
-                        # A junction needs no privilege. The old `mklink /J` call never
-                        # checked its result, so when it failed nothing raised, the
-                        # copy fallback below never ran, and the profile silently
-                        # lacked the shared directory while the installer reported
-                        # "full data synchronization".
-                        import _winapi
-                        _winapi.CreateJunction(str(src_item), str(dst_item))
+                        shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
                     else:
                         shutil.copy2(src_item, dst_item)
-                else:
-                    os.symlink(src_item, dst_item)
-            except (OSError, ImportError, AttributeError):
-                if src_item.is_dir():
-                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(src_item, dst_item)
-    print(f"  ✓ Initialized primary profile [{primary_prof}] with full data synchronization")
+        print(f"  ✓ Initialized primary profile [{primary_prof}] with full data synchronization")
 
-    # 7. Configure PATH, Multi-IDE Extension Wizard & Desktop Native MCP Integration
-    print("\n[7/7] Configuring User PATH, Multi-IDE Extensions & Claude Desktop MCP...")
-    if is_windows:
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
-                current_path, _ = winreg.QueryValueEx(key, "Path")
-                bin_str = str(bin_dir)
-                if bin_str not in current_path:
-                    new_path = f"{bin_str};{current_path}"
-                    winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
-                    print(f"  ✓ Added {bin_dir} to User PATH in Windows Registry")
-        except Exception as e:
-            print(f"  ⚠ Registry PATH update note: {e}")
+    # 7. Surfaces. Only what was chosen is touched: PATH for the terminal, the Cortex MCP
+    # tools for Claude Desktop folders that ALREADY exist, and a pointer for IDE extensions
+    # (`cc ide apply` takes a profile, so it is the person's choice, not the installer's).
+    print("\n[7/7] Configuring the surfaces you chose: " + ", ".join(surface_list) + "...")
+    sandbox = os.environ.get("CORTEX_SANDBOX") == "1"
+    if "terminal" in surface_list:
+        if sandbox:
+            # The registry and shell rc files belong to the REAL user whatever HOME says, so
+            # a sandboxed run must never write them.
+            print("  - Sandbox mode: PATH was not changed.")
+        elif is_windows:
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0,
+                                    winreg.KEY_READ | winreg.KEY_WRITE) as key:
+                    current_path, _ = winreg.QueryValueEx(key, "Path")
+                    bin_str = str(bin_dir)
+                    if bin_str not in current_path:
+                        new_path = f"{bin_str};{current_path}"
+                        winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+                        print(f"  ✓ Added {bin_dir} to User PATH in Windows Registry")
+            except Exception as e:
+                print(f"  ⚠ Registry PATH update note: {e}")
+        else:
+            for rc in [home / ".bashrc", home / ".zshrc"]:
+                if rc.exists():
+                    try:
+                        content = rc.read_text(encoding="utf-8")
+                        if str(bin_dir) not in content:
+                            with open(rc, "a", encoding="utf-8") as f:
+                                f.write(f'\nexport PATH="{bin_dir}:$PATH"\n')
+                            print(f"  ✓ Added {bin_dir} to {rc.name}")
+                    except Exception:
+                        pass
 
-        # IDE integration is deliberately NOT done here. This installer used to set
-        # claudeCode.claudeProcessWrapper to claude.cmd, but the extension calls a
-        # wrapper as `wrapper <real-binary> [args...]` and claude.cmd treats its first
-        # argument as a profile or command - so the IDE integration was broken after
-        # install (and a process wrapper also disables the extension's permission-mode
-        # resolution). `cc ide apply` sets environment variables instead, which is
-        # the supported mechanism, preserves the user's settings.json, and refuses to
-        # rewrite a file it cannot parse.
-        app_data = os.environ.get("APPDATA", str(home / "AppData" / "Roaming"))
-        print("  - IDE integration: run `cc ide check`, then `cc ide apply --yes`.")
-
-        # Claude Desktop MCP & Profiles on Windows
-        desktop_dirs_win = [
-            Path(app_data) / "Claude",
-            Path(app_data) / "Claude-profile-1",
-            Path(app_data) / "Claude-profile-2",
-        ]
-        cortex_mcp_script = str(claude_dir / "scripts" / "cortex-mcp.py")
-        for d in desktop_dirs_win:
-            d.mkdir(parents=True, exist_ok=True)
-            cfg_p = d / "claude_desktop_config.json"
-            if register_desktop_mcp(cfg_p, "python", cortex_mcp_script):
-                print(f"  ✓ Registered Cortex MCP tools in: {cfg_p.name} ({d.name})")
-
-    else:
-        # Bash / Zsh PATH
-        for rc in [home / ".bashrc", home / ".zshrc"]:
-            if rc.exists():
-                try:
-                    content = rc.read_text(encoding="utf-8")
-                    if str(bin_dir) not in content:
-                        with open(rc, "a", encoding="utf-8") as f:
-                            f.write(f'\nexport PATH="{bin_dir}:$PATH"\n')
-                        print(f"  ✓ Added {bin_dir} to {rc.name}")
-                except Exception:
-                    pass
-
-        # IDE integration: see the note in the Windows branch - use `cc ide apply`.
-        print("  - IDE integration: run `cc ide check`, then `cc ide apply --yes`.")
-
-        # Claude Desktop MCP Integration on Linux / macOS
-        desktop_dirs_posix = [
-            home / ".config" / "Claude",
-            home / ".config" / "claude-profile-1",
-            home / ".config" / "claude-profile-2",
-            home / "Library" / "Application Support" / "Claude",
-        ]
-        cortex_mcp_script = str(claude_dir / "scripts" / "cortex-mcp.py")
-        for d in desktop_dirs_posix:
-            if d.exists() or (d.parent.exists() and "claude-profile" in d.name):
-                d.mkdir(parents=True, exist_ok=True)
-                cfg_p = d / "claude_desktop_config.json"
-                if register_desktop_mcp(cfg_p, "python3", cortex_mcp_script):
-                    print(f"  ✓ Registered Cortex MCP tools in: {cfg_p}")
+    from cortex import surfaces as surface_tools
+    for line in surface_tools.apply(surface_list, str(claude_dir / "scripts" / "cortex-mcp.py"),
+                                    "python" if is_windows else "python3"):
+        print(f"  - {line}")
 
     print_header("Installation Complete! Claude Cortex is Ready Everywhere.")
     print("\nGet started:")
     print("  cc doctor                  Check the install and your Claude Code binary")
-    print("  cc profile add <name>      Create a profile, then: cc login <name>")
+    print("  cc profile detect          Find your existing Claude folders (read-only), then adopt them")
+    print("  cc profile add <name>      Or create a new profile, then: cc login <name>")
+    print("  cc profile surfaces <name> terminal,ide,desktop    Add where a profile is used, any time")
     print("  cc status                  Per-profile capacity (unknown stays unknown)")
     print("  cc continue                Resume the last conversation on a profile with room")
     print("  cc ide check | apply       Point IDE extensions at a profile (no files modified)")

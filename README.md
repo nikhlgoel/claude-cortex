@@ -89,6 +89,17 @@ cc mcp add                       # expose Cortex's tools to Claude (incl. evalua
 /dream <concept>                 # in a session: research-backed concept explorer
 ```
 
+Existing accounts, any surface (see [docs/PROFILES.md](docs/PROFILES.md)):
+
+```bash
+cc profile detect                # find your existing Claude folders (read-only)
+cc profile adopt <name> --desktop "<folder>" [--config "<folder>"]   # register in place
+cc profile surfaces <name> terminal,ide,desktop    # where it is used; add more any time
+cc desktop <name>                # open Claude Desktop on that profile's own data
+cc guard snapshot | verify       # prove a change touched no settings or credentials
+cc mcp add graphify | scrapling  # register those tools for a profile
+```
+
 Local models (Claude Code on a model running on this machine - see
 [docs/LOCAL_MODELS.md](docs/LOCAL_MODELS.md)):
 
@@ -233,6 +244,8 @@ not declare. See [tests/sandbox/README.md](tests/sandbox/README.md).
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) - how it works, what it cannot do, next steps
+- [Profiles and surfaces](docs/PROFILES.md) - adopt existing accounts in place, terminal/IDE/Desktop, testing safely
+- [Tool routing](docs/TOOL_ROUTING.md) - Scrapling, Graphify, Spec Kit and ECC picked automatically
 - [Local models](docs/LOCAL_MODELS.md) - Hugging Face GGUFs, llama.cpp, reasoning levels
 - [Framework options](docs/FRAMEWORK_OPTIONS.md) - five directions for what Cortex becomes
 - [Handover](HANDOVER.md) - installing it yourself, with verification steps

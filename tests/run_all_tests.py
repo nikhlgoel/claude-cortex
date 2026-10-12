@@ -47,6 +47,7 @@ TEST_MODULES = [
     "test_local",
     "test_profiles_adopt",
     "test_routing",
+    "test_installer_surfaces",
     "test_token_conservation",
     "test_memory_palace",
     "test_capacity_engine",

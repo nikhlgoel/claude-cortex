@@ -37,6 +37,7 @@ Profiles
   cc profile detect               Find existing Claude folders (read-only)
   cc profile adopt <name> [--config DIR] [--desktop DIR]   Register them in place
   cc profile verify <name>        Is this folder still signed in?
+  cc profile surfaces <name> [terminal,ide,desktop]   Where it is used (add more any time)
   cc desktop <name> | list        Open Claude Desktop on a profile's own data
   cc guard snapshot|verify [name] Prove a change touched no settings or credentials
   cc login [name]                 Sign in to a profile
@@ -189,6 +190,9 @@ def cmd_profile(args):
     if action == "show":
         return _profile_show(rest)
 
+    if action == "surfaces":
+        return _profile_surfaces(rest)
+
     print(f"Unknown profile action: {action}", file=sys.stderr)
     return 2
 
@@ -259,6 +263,32 @@ def _profile_verify(rest):
     print(f"'{name}' is NOT signed in ({status.get('error') or 'no active login for this folder'}).")
     print("If this folder was adopted, nothing was changed; sign in with: cc login " + name)
     return 1
+
+
+def _profile_surfaces(rest):
+    """Show or change where a profile is used: terminal, ide, desktop (any mix, any time)."""
+    from . import registry, surfaces
+    positional = [a for a in rest if not a.startswith("-")]
+    name = profiles.normalize_name(positional[0] if positional else "")
+    if not name or name not in profiles.list_profiles():
+        print("Usage: cc profile surfaces <name> [terminal,ide,desktop] [--dry-run]", file=sys.stderr)
+        return 2
+    entry = registry.lookup(name) or {}
+    if len(positional) < 2:
+        print(f"'{name}' surfaces: {', '.join(entry.get('surfaces') or ['terminal'])}")
+        return 0
+    try:
+        chosen = surfaces.parse(positional[1])
+    except ValueError as exc:
+        print(f"cc: {exc}", file=sys.stderr)
+        return 2
+    dry = "--dry-run" in rest
+    for line in surfaces.apply(chosen, surfaces.mcp_script_path(), surfaces.python_for_desktop(), dry):
+        print(f"  {line}")
+    if not dry:
+        registry.set_surfaces(name, chosen)
+        print(f"Recorded surfaces for '{name}': {', '.join(chosen)}. No data was moved or copied.")
+    return 0
 
 
 def _profile_show(rest):
