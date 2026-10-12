@@ -18,10 +18,27 @@ import shutil
 import subprocess
 import sys
 
-from . import jsonfile, profiles
-from .paths import profile_dir
+from . import binary, jsonfile, proc, profiles
+from .paths import apply_config_env, profile_dir
 
 SERVER_NAME = "cortex"
+
+# Third-party MCP servers Cortex knows how to register. They are registered through
+# Claude Code's own `claude mcp add --scope user` - the supported write path - rather than
+# by editing .claude.json, which Claude Code itself rewrites constantly. Cortex never
+# installs them: if one is missing it says how, and you run that.
+EXTERNAL = {
+    "graphify": {
+        "command": "graphify-mcp", "package": "graphifyy",
+        "about": "code knowledge graph: callers, paths, architecture. Needs a graph built "
+                 "per project first (graphify's /graphify command).",
+    },
+    "scrapling": {
+        "command": "scrapling-mcp", "package": "scrapling",
+        "about": "web fetching and scraping. Its browser-based fetchers need "
+                 "`scrapling install`, which downloads browsers - run that yourself.",
+    },
+}
 
 # The tools scripts/cortex-mcp.py exposes. Kept in step with its TOOLS table by
 # tests/test_core_fixes.py, so this list cannot silently go stale.
@@ -126,6 +143,64 @@ def cmd_remove(profile):
     return 0
 
 
+def _registered_servers(profile):
+    """Names registered in the profile's user config (read-only)."""
+    from .paths import is_native_default
+    folder = profile_dir(profile)
+    # The native default keeps its user config next to the folder, not inside it.
+    config = os.path.join(os.path.dirname(folder), ".claude.json") if is_native_default(folder) \
+        else os.path.join(folder, ".claude.json")
+    servers = jsonfile.read(config, {}).get("mcpServers")
+    return set(servers) if isinstance(servers, dict) else set()
+
+
+def cmd_add_external(server, profile, dry_run=False):
+    """Register a known third-party MCP server for a profile via `claude mcp add`."""
+    spec = EXTERNAL[server]
+    exe = shutil.which(spec["command"])
+    if not exe:
+        print(f"cc mcp: '{spec['command']}' is not installed.\n"
+              f"    Install it yourself with:  uv tool install {spec['package']}", file=sys.stderr)
+        return 1
+    if server in _registered_servers(profile):
+        print(f"'{server}' is already registered for profile '{profile}'.")
+        return 0
+    claude = binary.find()
+    if not claude:
+        print("cc mcp: no working Claude Code binary found (run: cc doctor).", file=sys.stderr)
+        return 1
+
+    command = [claude, "mcp", "add", "--scope", "user", server, "--", exe]
+    if dry_run:
+        print(f"[dry-run] would run: {' '.join(command)}")
+        print(f"          with the config folder of profile '{profile}'")
+        return 0
+    env = apply_config_env(dict(os.environ), profile_dir(profile))
+    try:
+        result = proc.run(command, timeout=90, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"cc mcp: could not run claude: {exc}", file=sys.stderr)
+        return 1
+    if result.returncode != 0:
+        print(f"cc mcp: registering '{server}' failed:\n{(result.stderr or result.stdout).strip()}",
+              file=sys.stderr)
+        return 1
+    print(f"Registered '{server}' for profile '{profile}' ({spec['about']})")
+    print("Start a new session under that profile to use it.")
+    return 0
+
+
+def cmd_remove_external(server, profile):
+    claude = binary.find()
+    if not claude:
+        print("cc mcp: no working Claude Code binary found.", file=sys.stderr)
+        return 1
+    env = apply_config_env(dict(os.environ), profile_dir(profile))
+    result = proc.run([claude, "mcp", "remove", "--scope", "user", server], timeout=60, env=env)
+    print((result.stdout or result.stderr).strip() or f"Removed '{server}'.")
+    return result.returncode
+
+
 def cmd_test(_profile):
     """Verify the server speaks the protocol, without a live Claude session."""
     server_path = _server_path()
@@ -181,6 +256,11 @@ cc mcp - manage the Cortex MCP server
   cc mcp remove [profile]     unregister it
   cc mcp test                 protocol self-test, no session needed
 
+  cc mcp add graphify [profile]    code knowledge graph tools (graphify-mcp)
+  cc mcp add scrapling [profile]   web fetching/scraping tools (scrapling-mcp)
+      Registered through `claude mcp add --scope user`. Cortex never installs
+      them; if missing it prints the `uv tool install` command for you to run.
+
 Registration only tells Claude Code to launch a local process; it does not
 change how you authenticate. Your subscription is unaffected.
 """
@@ -193,9 +273,29 @@ def main(args):
 
     action = args[0]
     rest = args[1:]
-    profile = profiles.normalize_name(rest[0]) if rest and not rest[0].startswith("-") \
-        else profiles.active_profile()
 
+    # `cc mcp add graphify [profile]` - a known third-party server name first. A profile
+    # that happens to share a server's name is ambiguous, so refuse rather than guess.
+    server = None
+    if action in ("add", "remove") and rest and rest[0] in EXTERNAL:
+        if rest[0] in profiles.list_profiles():
+            print(f"cc mcp: '{rest[0]}' is both a server and a profile name; rename the profile "
+                  f"or pass the profile with --profile.", file=sys.stderr)
+            return 2
+        server, rest = rest[0], rest[1:]
+    explicit = None
+    if "--profile" in rest:
+        i = rest.index("--profile")
+        explicit = rest[i + 1] if i + 1 < len(rest) else None
+        rest = rest[:i] + rest[i + 2:]
+    positional = [a for a in rest if not a.startswith("-")]
+    profile = profiles.normalize_name(explicit or (positional[0] if positional else "")) \
+        or profiles.active_profile()
+
+    if server and action == "add":
+        return cmd_add_external(server, profile, dry_run="--dry-run" in rest)
+    if server and action == "remove":
+        return cmd_remove_external(server, profile)
     if action == "status":
         return cmd_status(profile)
     if action == "add":

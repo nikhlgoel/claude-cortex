@@ -100,5 +100,35 @@ def profile_dir(name: str) -> str:
     return canonical_dir(os.path.join(profiles_dir(), name))
 
 
+def is_native_default(config_dir: str) -> bool:
+    """True when ``config_dir`` is the folder Claude Code uses on its own: ``~/.claude``.
+
+    With CLAUDE_CONFIG_DIR unset, Claude Code keeps its user config in ``~/.claude.json``
+    (next to the folder). With it set - even to ``~/.claude`` itself - it reads
+    ``<dir>/.claude.json`` instead, a DIFFERENT file: MCP servers, project trust and
+    onboarding state would silently go missing for the default account.
+    """
+    if not config_dir:
+        return False
+    norm = lambda p: os.path.normcase(os.path.normpath(p).replace("/", os.sep))    # noqa: E731
+    return norm(config_dir) == norm(os.path.join(home(), ".claude"))
+
+
+def apply_config_env(env: dict, config_dir: str) -> dict:
+    """Point ``env`` at ``config_dir`` the way Claude Code expects, and return it.
+
+    Both variables carry the identical string (the credential namespace is derived from
+    it). For the native default folder they are REMOVED instead, so the session behaves
+    exactly like a plain ``claude`` and keeps using ``~/.claude.json``.
+    """
+    if is_native_default(config_dir):
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        env.pop("CLAUDE_SECURESTORAGE_CONFIG_DIR", None)
+    else:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+        env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = config_dir
+    return env
+
+
 def bin_dir() -> str:
     return canonical_dir(os.path.join(home(), ".local", "bin"))

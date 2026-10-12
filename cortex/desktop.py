@@ -19,7 +19,7 @@ import re
 import subprocess
 
 from . import proc
-from .paths import profile_dir, shared_claude_dir
+from .paths import apply_config_env, profile_dir, shared_claude_dir
 
 _APP_DIR = re.compile(r"^app-(\d+(?:\.\d+)*)$")
 _USER_DATA = re.compile(r'--user-data-dir=("([^"]+)"|(\S+))', re.I)
@@ -146,8 +146,7 @@ def launch(name, entry, share_config=True, spawn=subprocess.Popen):
     env = dict(os.environ)
     config = profile_dir(name)
     if share_config and os.path.isdir(config):
-        env["CLAUDE_CONFIG_DIR"] = config
-        env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = config
+        apply_config_env(env, config)
     flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
     child = spawn([exe, f"--user-data-dir={folder}"], env=env, creationflags=flags,
                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

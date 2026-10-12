@@ -28,6 +28,7 @@ import subprocess
 import sys
 
 from . import binary, profiles
+from .paths import apply_config_env
 
 # Model IDs are Anthropic's exact strings. The short flags (-s, -o, -H) keep their
 # long-standing targets so existing habits do not change under anyone; the newer
@@ -72,8 +73,7 @@ def session_env(config_dir: str, extra=None, drop=()):
     # Profile isolation. Both variables must carry the identical canonical
     # string: Claude Code derives the credential namespace from a hash of it, so
     # any difference in spelling is a different account.
-    env["CLAUDE_CONFIG_DIR"] = config_dir
-    env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = config_dir
+    apply_config_env(env, config_dir)
 
     # Remove settings a previous Cortex version exported that break compaction.
     for stale in ("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "CLAUDE_CODE_AUTO_COMPACT_WINDOW",

@@ -781,8 +781,11 @@ class TestLocalGateway(IsolatedHome):
         return conn, conn.getresponse()
 
     def test_requests_without_the_token_are_refused_before_the_body_is_read(self):
-        for token in (None, "wrong", ""):
-            conn, resp = self.post("/v1/messages", self.BODY, token=token)
+        # A large body, repeatedly: closing a connection with unread bytes makes Windows
+        # reset it, so a client with a wrong token saw "connection aborted" instead of 401.
+        big = dict(self.BODY, messages=[{"role": "user", "content": "x" * 200_000}])
+        for token in (None, "wrong", "") * 4:
+            conn, resp = self.post("/v1/messages", big, token=token)
             self.assertEqual(resp.status, 401, token)
             self.assertIn("authentication_error", resp.read().decode())
             conn.close()

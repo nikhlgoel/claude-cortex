@@ -26,7 +26,7 @@ import subprocess
 import sys
 
 from . import binary, jsonfile
-from .paths import canonical_dir, profile_dir, profiles_dir, shared_claude_dir
+from .paths import apply_config_env, canonical_dir, profile_dir, profiles_dir, shared_claude_dir
 
 class CortexError(Exception):
     """An operation failed for a reason worth explaining to the operator.
@@ -268,9 +268,7 @@ def _auth_status_uncached(config_dir: str):
     if not exe:
         return {"loggedIn": False, "error": "no Claude Code binary found"}
 
-    env = dict(os.environ)
-    env["CLAUDE_CONFIG_DIR"] = config_dir
-    env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = config_dir
+    env = apply_config_env(dict(os.environ), config_dir)
     try:
         res = subprocess.run([exe, "auth", "status"], capture_output=True,
                              text=True, timeout=60, env=env)
@@ -357,9 +355,7 @@ def login(name: str) -> int:
               file=sys.stderr)
         return 1
 
-    env = dict(os.environ)
-    env["CLAUDE_CONFIG_DIR"] = target
-    env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = target
+    env = apply_config_env(dict(os.environ), target)
 
     print(f"Starting authentication for profile '{name}'...")
     try:

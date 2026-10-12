@@ -277,6 +277,20 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+    #: An unauthenticated client may not make us read more than this.
+    DISCARD_LIMIT = 256 * 1024
+
+    def _discard_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            return
+        if 0 < length <= self.DISCARD_LIMIT:
+            try:
+                self.rfile.read(length)
+            except OSError:
+                pass
+
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/")
         if path not in ("/v1/messages", "/v1/messages/count_tokens"):
@@ -291,6 +305,10 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
 
         # Local mode: authenticate BEFORE reading or parsing the body.
         if LOCAL is not None and not LOCAL[0].authorized(self.headers):
+            # Discard (never parse) the body first: closing a connection with unread
+            # bytes makes Windows reset it, and the client then sees "connection aborted"
+            # instead of a clear 401.
+            self._discard_body()
             self.send_anthropic_error(401, "authentication_error",
                                       "Missing or wrong token for the Cortex local gateway.")
             return

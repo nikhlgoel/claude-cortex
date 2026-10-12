@@ -95,6 +95,20 @@ def route(args):
     return args, None
 
 
+def routing_hint(prompt, cwd):
+    """A routing hint for ``prompt`` or None. Any failure means "no hint", never an error."""
+    try:
+        command, base = cortex_command()
+        if not command:
+            return None
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        from cortex import routing
+        return routing.hint_for(prompt, cwd)
+    except Exception:
+        return None
+
+
 def run_cortex(args):
     """Run a Cortex command and return its combined output."""
     command, base = cortex_command()
@@ -151,7 +165,12 @@ def main():
         print(output.strip(), file=sys.stderr)
         return 2
 
-    # Anything else is a real prompt. Do not touch it.
+    # Anything else is a real prompt. Never block or rewrite it; at most add one short
+    # line of context pointing at a specialised tool the prompt clearly calls for.
+    hint = routing_hint(prompt, payload.get("cwd") if isinstance(payload, dict) else None)
+    if hint:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                                 "additionalContext": hint}}))
     return 0
 
 

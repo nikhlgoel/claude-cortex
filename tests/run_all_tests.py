@@ -46,6 +46,7 @@ TEST_MODULES = [
     "test_audit_batch2",
     "test_local",
     "test_profiles_adopt",
+    "test_routing",
     "test_token_conservation",
     "test_memory_palace",
     "test_capacity_engine",
