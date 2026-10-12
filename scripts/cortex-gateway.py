@@ -25,7 +25,22 @@ import time
 import argparse
 import urllib.request
 import urllib.error
+import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+# The local-model route lives in the Cortex core so it can be tested without a model.
+# Prefer a checkout next to this script (what is being edited), then the installed core.
+for _candidate in (os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                   os.path.expanduser("~/.claude/cortex-core")):
+    if os.path.isdir(os.path.join(_candidate, "cortex")) and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
+        break
+
+#: Set by main() when started with CORTEX_GATEWAY_ROUTE=local. While it is set, EVERY
+#: request goes to the local model; providers.json is not consulted, so a cloud
+#: provider switch can never redirect (or leak) local traffic.
+LOCAL = None
+START_TIME = time.time()
 
 #: Upstream statuses that mean "try again", not "your request is wrong".
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 529})
@@ -212,6 +227,15 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Connection", "close")
         self.end_headers()
+        if LOCAL is not None:
+            # Deliberately minimal: no paths, no provider config, no token.
+            res = {"status": "ok", "service": "Claude-Cortex-Gateway", "mode": "local",
+                   "model": LOCAL[1], "uptime_s": int(time.time() - START_TIME)}
+            try:
+                self.wfile.write(json.dumps(res).encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         prov = get_active_provider_config()
         res = {
             "status": "ok",
@@ -254,7 +278,8 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
-        if not self.path.startswith("/v1/messages"):
+        path = self.path.split("?", 1)[0].rstrip("/")
+        if path not in ("/v1/messages", "/v1/messages/count_tokens"):
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
@@ -262,6 +287,12 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b"Claude Cortex Gateway v3.0 Active.")
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            return
+
+        # Local mode: authenticate BEFORE reading or parsing the body.
+        if LOCAL is not None and not LOCAL[0].authorized(self.headers):
+            self.send_anthropic_error(401, "authentication_error",
+                                      "Missing or wrong token for the Cortex local gateway.")
             return
 
         try:
@@ -276,8 +307,20 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
             self.send_anthropic_error(400, "invalid_request_error", f"Invalid JSON payload: {e}")
             return
 
+        if LOCAL is not None:
+            if path.endswith("/count_tokens"):
+                LOCAL[0].count_tokens(self, req_data)
+            else:
+                LOCAL[0].messages(self, req_data)
+            return
+
         prov = get_active_provider_config()
         route, problem = resolve_route(prov)
+
+        if path.endswith("/count_tokens"):
+            # Never run a full (billed) generation to answer a counting question.
+            self.handle_count_tokens(req_data, prov, route)
+            return
 
         if route is None:
             # Refuse. Every previous default (Gemini, Anthropic) shipped the caller's
@@ -291,6 +334,43 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
             self.handle_anthropic_dispatch(req_data, prov)
         elif route == "local":
             self.handle_local_dispatch(req_data, prov)
+
+    def handle_local_dispatch(self, req_data, prov):
+        # Reached only when providers.json selects "local" on the SHARED cloud gateway.
+        # Local models run behind their own authenticated gateway (cc offline /
+        # cc local serve), so say so rather than guess at a port or skip the token.
+        self.send_anthropic_error(
+            400, "invalid_request_error",
+            "Cortex: local models are served by their own gateway. Start a session with "
+            "'cc offline' (or run 'cc local serve') instead of selecting 'local' in 'cc provider'.")
+
+    def handle_count_tokens(self, req_data, prov, route):
+        """Answer /v1/messages/count_tokens without running a generation."""
+        if route == "anthropic":
+            api_key = self.headers.get("x-api-key") or prov.get("api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
+            if api_key:
+                headers = {"Content-Type": "application/json", "x-api-key": api_key,
+                           "anthropic-version": "2023-06-01"}
+                upstream_req = urllib.request.Request(
+                    "https://api.anthropic.com/v1/messages/count_tokens",
+                    data=json.dumps(req_data).encode("utf-8"), headers=headers, method="POST")
+                self.relay(upstream_req, "Anthropic")
+                return
+        try:
+            from cortex.local import shaping
+            count = shaping.estimate_tokens(req_data)
+        except ImportError:
+            count = max(1, len(json.dumps(req_data, default=str)) // 3)
+        body = json.dumps({"input_tokens": count}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Cortex-Count", "estimate")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     # -------------------------------------------------------------------------
     # Route 1: OpenRouter Dispatch with OT-ACR Token Compression
@@ -572,21 +652,58 @@ class CortexGatewayHandler(BaseHTTPRequestHandler):
         upstream_req = urllib.request.Request(target_url, data=payload_bytes, headers=headers, method="POST")
         self.relay(upstream_req, "Anthropic")
 
+def _idle_watchdog():
+    """Stop the model server and exit after ``idle_stop_minutes`` with no traffic.
+
+    A laptop should not keep gigabytes of VRAM and RAM pinned after the last session
+    closed. ``cc offline`` starts everything again on demand.
+    """
+    from cortex.local import serve
+    minutes = LOCAL[0].cfg.get("idle_stop_minutes") or 0
+    if minutes <= 0:
+        return
+    while True:
+        time.sleep(30)
+        if LOCAL[0].idle_seconds() >= minutes * 60:
+            serve.stop("server")
+            serve._clear_state("gateway")
+            os._exit(0)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Claude Cortex Universal Gateway Proxy v3.0")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to listen on (default: 8088)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host binding (default: 127.0.0.1)")
     args = parser.parse_args()
 
+    global LOCAL
+    if os.environ.get("CORTEX_GATEWAY_ROUTE") == "local":
+        if args.host not in ("127.0.0.1", "localhost", "::1"):
+            print("cortex-gateway: local mode only binds to loopback.", file=sys.stderr)
+            return 2
+        try:
+            from cortex.local import gateway_local
+            LOCAL = gateway_local.build()
+        except Exception as exc:
+            print(f"cortex-gateway: cannot start local mode: {exc}", file=sys.stderr)
+            return 1
+        if not LOCAL[0].token:
+            print("cortex-gateway: no token file; run 'cc local serve' to create one.", file=sys.stderr)
+            return 1
+
     server = ThreadingHTTPServer((args.host, args.port), CortexGatewayHandler)
-    prov = get_active_provider_config()
     print("=================================================================")
     print("Claude Cortex Universal Gateway Proxy v3.0 [Active]")
     print(f"Listening on: http://{args.host}:{args.port}")
-    print(f"Active Upstream Provider: {prov.get('name', 'OAuth')}")
-    print("OT-ACR Token Optimization: Active")
+    if LOCAL is not None:
+        print(f"Mode: LOCAL model '{LOCAL[1]}' (token required, OT-ACR off)")
+        threading.Thread(target=_idle_watchdog, daemon=True).start()
+    else:
+        prov = get_active_provider_config()
+        print(f"Active Upstream Provider: {prov.get('name', 'OAuth')}")
+        print("OT-ACR Token Optimization: Active")
     print("Anti-Stall Watchdog: Enabled")
-    print("=================================================================")
+    print("=================================================================", flush=True)
 
     try:
         server.serve_forever()
@@ -595,4 +712,4 @@ def main():
         server.server_close()
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

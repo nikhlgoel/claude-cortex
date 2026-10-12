@@ -51,12 +51,23 @@ EFFORT_FLAGS = {
     "--think-max": "max", "--think-off": "low",
 }
 
-VALID_EFFORT = ("low", "medium", "high", "xhigh", "max")
+# "ultracode" is accepted by Claude Code's own ``--effort`` flag (2.1.203+) but it is
+# not a reasoning level: it is a client-side mode that fans work out across many
+# subagent calls. It is passed through untouched; the local gateway never sees it as a
+# level (see cortex/local/shaping.py).
+VALID_EFFORT = ("low", "medium", "high", "xhigh", "max", "ultracode")
 
 
-def session_env(config_dir: str, extra=None):
-    """Environment for a launched session."""
+def session_env(config_dir: str, extra=None, drop=()):
+    """Environment for a launched session.
+
+    ``drop`` names variables to remove from the inherited environment before ``extra``
+    is applied - used by the offline profile so a real cloud credential in the parent
+    shell can never reach a local model session.
+    """
     env = dict(os.environ)
+    for name in drop:
+        env.pop(name, None)
 
     # Profile isolation. Both variables must carry the identical canonical
     # string: Claude Code derives the credential namespace from a hash of it, so
@@ -148,6 +159,21 @@ def launch(profile: str, argv, extra_env=None, continue_session=False):
 
     profile = profiles.normalize_name(profile)
     config_dir = profiles.ensure_structure(profile, profiles.profile_mode(profile))
+    return launch_dir(config_dir, argv, extra_env=extra_env, continue_session=continue_session,
+                      exe=exe)
+
+
+def launch_dir(config_dir: str, argv, extra_env=None, continue_session=False, drop=(), exe=None):
+    """Exec a Claude Code session against an explicit config directory.
+
+    ``launch`` resolves a named cloud profile and delegates here. The offline profile
+    calls this directly, because its directory deliberately lives outside the cloud
+    profile namespace.
+    """
+    exe = exe or binary.find()
+    if not exe:
+        print("No working Claude Code binary found.", file=sys.stderr)
+        return 1
 
     args, error = translate_args(list(argv))
     if error:
@@ -157,7 +183,7 @@ def launch(profile: str, argv, extra_env=None, continue_session=False):
     if continue_session:
         args = ["--continue"] + args
 
-    env = session_env(config_dir, extra_env)
+    env = session_env(config_dir, extra_env, drop=drop)
 
     # On POSIX, replace this process rather than wrapping it. Claude Code is a
     # full-screen interactive program: keeping a Python parent in between adds a

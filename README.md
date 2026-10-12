@@ -89,6 +89,17 @@ cc mcp add                       # expose Cortex's tools to Claude (incl. evalua
 /dream <concept>                 # in a session: research-backed concept explorer
 ```
 
+Local models (Claude Code on a model running on this machine - see
+[docs/LOCAL_MODELS.md](docs/LOCAL_MODELS.md)):
+
+```bash
+cc local status                  # hardware, runtime, which models fit
+cc local install --runtime       # llama.cpp - asks first, shows size + sha256
+cc local install qwen3.5-4b      # a Hugging Face GGUF - asks first, resumable, verified
+cc local doctor --smoke          # checks every link and MEASURES your speed
+cc offline                       # Claude Code against the local model
+```
+
 An unrecognized command is refused with a suggestion rather than being sent to
 Claude as a prompt. An earlier version forwarded twelve legacy subcommands
 (`docs`, `menu`, `palace`, ...) straight into a session, spending tokens to
@@ -212,10 +223,18 @@ not declare. See [tests/sandbox/README.md](tests/sandbox/README.md).
   will not auto-select them - missing data is not evidence of free capacity.
 - **Antigravity integration cannot be tested in CI** (Windows-only app). Its
   settings are generated and statically validated; verify by launching it.
+- **Local models are tested with fakes, not yet with a real model.** The consent gate,
+  downloads, gateway shaping and process handling are covered by tests; a real
+  `llama-server` + model + Claude Code session has not been run by the code's author, and
+  tokens/second on your machine is unknown until `cc local doctor --smoke` measures it.
+  Small local models are far weaker than Claude at long agent runs, and Anthropic does not
+  support non-Claude models behind a gateway.
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) - how it works, what it cannot do, next steps
+- [Local models](docs/LOCAL_MODELS.md) - Hugging Face GGUFs, llama.cpp, reasoning levels
+- [Framework options](docs/FRAMEWORK_OPTIONS.md) - five directions for what Cortex becomes
 - [Handover](HANDOVER.md) - installing it yourself, with verification steps
 - [Ghidra audit](tools/ghidra/AUDIT.md) - supply-chain findings and residual risk
 - [Test harness](tests/sandbox/README.md) - scenarios, fuzzing, mutation testing

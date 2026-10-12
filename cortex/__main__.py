@@ -21,7 +21,7 @@ VERSION = "2.0.0"
 TOP_LEVEL_COMMANDS = (
     "profile", "profiles", "login", "switch", "status", "quota", "capacity",
     "limits", "continue", "doctor", "ide", "ghidra", "mcp", "integrity",
-    "model", "models", "version", "help",
+    "model", "models", "local", "offline", "version", "help",
 ) + tuple(tools.TOOLS)
 
 USAGE = """\
@@ -45,6 +45,10 @@ Session
   cc -e <low|medium|high|xhigh|max>   Reasoning effort
   cc -t                           Turbo (Haiku, low effort)
   cc -y                           Skip permission prompts
+
+Local models (no cloud, no account)
+  cc local status | search | install | serve | doctor   See `cc local help`
+  cc offline [claude args...]     Claude Code on a model running on this machine
 
 Diagnostics
   cc doctor [--repair]            Diagnose configuration problems
@@ -306,6 +310,12 @@ def main(argv=None):
             return integrity.main(rest)
         if head in ("model", "models"):
             return models.main(rest)
+        if head == "local":
+            from . import local
+            return local.main(rest)
+        if head == "offline":
+            from . import local
+            return local.cmd_offline(rest)
         if tools.is_tool(head):
             return tools.run(head, rest)
         if tools.is_in_session_only(head):
