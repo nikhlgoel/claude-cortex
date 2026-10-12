@@ -425,6 +425,28 @@ def cmd_continue(args):
     return launcher.launch(target, rest, continue_session=True)
 
 
+def cmd_version():
+    """`cc --version`: both versions, with no profile, sign-in or session involved.
+
+    This used to be passed to Claude Code as a session start, so an unsigned profile answered
+    a version question with a login prompt.
+    """
+    import subprocess
+    from . import binary
+    print(f"Claude Cortex {VERSION}")
+    exe = binary.find()
+    if not exe:
+        print("Claude Code: not found (run `cc doctor`)")
+        return 0
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=30,
+                             encoding="utf-8", errors="replace")
+        print("Claude Code: " + (out.stdout.strip() or out.stderr.strip() or "unknown"))
+    except (OSError, subprocess.SubprocessError):
+        print("Claude Code: found but did not answer --version")
+    return 0
+
+
 def require_profile(name=None):
     """Resolve a usable profile, or explain why there isn't one.
 
@@ -482,6 +504,8 @@ def main(argv=None):
         if head in ("version", "--cc-version"):
             print(f"Claude Cortex {VERSION}")
             return 0
+        if head in ("--version", "-v", "-V") and not rest:
+            return cmd_version()
         if head in ("profile", "profiles"):
             return cmd_profile(rest)
         if head == "login":

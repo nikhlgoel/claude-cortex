@@ -17,12 +17,21 @@ Rules this packager enforces, each learned from a broken release:
 
 import hashlib
 import os
+import sys
 import re
 import shutil
 import tarfile
 import zipfile
 from datetime import date
 from pathlib import Path
+
+# The progress lines use check marks; a Windows console on cp1252 cannot print them and the
+# build used to crash half way through with a UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIST_PARENT = REPO_ROOT / "releases"

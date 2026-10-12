@@ -325,6 +325,31 @@ class TestCommandMessages(Sandbox):
         self.assertEqual(rc, 0)
         self.assertIn("trailing slash", out)
 
+    def test_version_needs_no_profile_no_sign_in_and_starts_no_session(self):
+        for flag in ("--version", "-v", "-V", "version"):
+            with mock.patch.object(cli.launcher, "launch") as launch, \
+                    mock.patch.object(cli.profiles, "login") as login, \
+                    mock.patch("cortex.binary.find", return_value=None):
+                rc, out, _ = self.run_cli(flag)
+            self.assertEqual(rc, 0, flag)
+            self.assertIn("Claude Cortex " + cli.VERSION, out)
+            launch.assert_not_called()
+            login.assert_not_called()
+
+    def test_version_also_reports_the_claude_code_underneath(self):
+        done = mock.Mock(stdout="2.1.150 (Claude Code)", stderr="", returncode=0)
+        with mock.patch("cortex.binary.find", return_value="claude-bin"), \
+                mock.patch("subprocess.run", return_value=done) as run:
+            rc, out, _ = self.run_cli("--version")
+        self.assertEqual(rc, 0)
+        self.assertIn("Claude Code: 2.1.150", out)
+        self.assertEqual(run.call_args[0][0], ["claude-bin", "--version"])
+
+    def test_version_with_more_arguments_is_still_passed_to_claude(self):
+        with mock.patch.object(cli, "require_profile", return_value=(None, 1)) as need:
+            rc, _out, _err = self.run_cli("--version", "extra")
+        need.assert_called()
+
     def test_showing_a_profile_that_does_not_exist_is_an_error(self):
         rc, _out, err = self.run_cli("profile", "show", "nonexistent")
         self.assertEqual(rc, 1)
