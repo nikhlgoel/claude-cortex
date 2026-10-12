@@ -21,7 +21,7 @@ VERSION = "2.0.0"
 TOP_LEVEL_COMMANDS = (
     "profile", "profiles", "login", "switch", "status", "quota", "capacity",
     "limits", "continue", "doctor", "ide", "ghidra", "mcp", "integrity",
-    "model", "models", "local", "offline", "version", "help",
+    "model", "models", "local", "offline", "desktop", "guard", "version", "help",
 ) + tuple(tools.TOOLS)
 
 USAGE = """\
@@ -34,6 +34,11 @@ Profiles
   cc profile list                 Show profiles and auth state
   cc profile add [name]           Create a profile
   cc profile remove <name> [--yes]  Delete a profile (--yes required in scripts)
+  cc profile detect               Find existing Claude folders (read-only)
+  cc profile adopt <name> [--config DIR] [--desktop DIR]   Register them in place
+  cc profile verify <name>        Is this folder still signed in?
+  cc desktop <name> | list        Open Claude Desktop on a profile's own data
+  cc guard snapshot|verify [name] Prove a change touched no settings or credentials
   cc login [name]                 Sign in to a profile
   cc switch [name]                Set the active profile
   cc status | cc quota            Account capacity
@@ -172,8 +177,150 @@ def cmd_profile(args):
                 return 0
         return profiles.remove(name)
 
+    if action == "detect":
+        return _profile_detect()
+
+    if action == "adopt":
+        return _profile_adopt(rest)
+
+    if action == "verify":
+        return _profile_verify(rest)
+
+    if action == "show":
+        return _profile_show(rest)
+
     print(f"Unknown profile action: {action}", file=sys.stderr)
     return 2
+
+
+def _opt(args, name):
+    """Value after ``--name`` (or ``--name=value``), else None."""
+    for i, arg in enumerate(args):
+        if arg == name:
+            return args[i + 1] if i + 1 < len(args) else None
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _profile_detect():
+    """Read-only: list existing Claude folders and print the adopt commands for them."""
+    from . import desktop, registry
+    found = desktop.detect()
+    known = {os.path.normcase(e.get("desktop_dir") or ""): n for n, e in registry.load().items()}
+    if not found:
+        print("No existing Desktop profile folders were found.")
+        return 0
+    print("Existing Claude folders found (nothing was changed or read beyond names):\n")
+    for item in found:
+        label = desktop.suggest_name(item["label"])
+        mark = f"  [already registered as '{known[os.path.normcase(item['desktop_dir'])]}']" \
+            if os.path.normcase(item["desktop_dir"]) in known else ""
+        print(f"  {item['label']}{mark}\n    desktop folder : {item['desktop_dir']}\n"
+              f"    CLI login here : {item['config_dir'] or 'none found (log in once with: cc login ' + label + ')'}")
+        if not mark:
+            cmd = f'cc profile adopt {label} --desktop "{item["desktop_dir"]}"'
+            if item["config_dir"]:
+                cmd += f' --config "{item["config_dir"]}"'
+            print(f"    to adopt       : {cmd}")
+        print()
+    print("Adopting only records these paths. It never moves, copies or edits a folder.")
+    return 0
+
+
+def _profile_adopt(rest):
+    from . import registry
+    name = profiles.normalize_name(next((a for a in rest if not a.startswith("-")), ""))
+    config, desktop_dir = _opt(rest, "--config"), _opt(rest, "--desktop")
+    if not name or not (config or desktop_dir):
+        print('Usage: cc profile adopt <name> [--config "<folder>"] [--desktop "<folder>"]',
+              file=sys.stderr)
+        return 2
+    if name in TOP_LEVEL_COMMANDS or tools.is_retired(name):
+        print(f"'{name}' is a Cortex command and cannot be a profile name.", file=sys.stderr)
+        return 2
+    surfaces = _opt(rest, "--surfaces")
+    registry.adopt(name, config, desktop_dir, surfaces.split(",") if surfaces else None)
+    print(f"Registered '{name}'. No folder was moved, copied or modified.")
+    print(f"Check the login still works with: cc profile verify {name}")
+    return 0
+
+
+def _profile_verify(rest):
+    name = profiles.normalize_name(next((a for a in rest if not a.startswith("-")), ""))
+    if name not in profiles.list_profiles():
+        print(f"Profile '{name or '?'}' does not exist. Available: {', '.join(profiles.list_profiles()) or 'none'}",
+              file=sys.stderr)
+        return 1
+    status = profiles.auth_status(profile_dir(name), refresh=True)
+    if status.get("loggedIn"):
+        print(f"'{name}' is signed in as {status.get('email') or 'an account (email not reported)'}.")
+        return 0
+    print(f"'{name}' is NOT signed in ({status.get('error') or 'no active login for this folder'}).")
+    print("If this folder was adopted, nothing was changed; sign in with: cc login " + name)
+    return 1
+
+
+def _profile_show(rest):
+    from . import registry
+    name = profiles.normalize_name(next((a for a in rest if not a.startswith("-")), ""))
+    entry = registry.lookup(name)
+    print(f"profile       : {name}")
+    print(f"CLI config    : {profile_dir(name)} ({'adopted, left untouched' if registry.is_adopted(name) else 'managed by Cortex'})")
+    print(f"Desktop folder: {(entry or {}).get('desktop_dir') or 'none'}")
+    print(f"surfaces      : {', '.join((entry or {}).get('surfaces') or ['terminal'])}")
+    return 0
+
+
+def cmd_desktop(args):
+    from . import desktop, registry
+    if not args or args[0] in ("list", "ls"):
+        any_found = False
+        for name in registry.names():
+            entry = registry.lookup(name)
+            if entry.get("desktop_dir"):
+                any_found = True
+                print(f"  {name:<14} {entry['desktop_dir']}")
+        if not any_found:
+            print("No Desktop profiles registered. See: cc profile detect")
+        return 0
+    name = profiles.normalize_name(args[0])
+    entry = registry.lookup(name)
+    if not entry:
+        print(f"'{name}' is not registered. See: cc profile detect", file=sys.stderr)
+        return 1
+    try:
+        pid = desktop.launch(name, entry, share_config="--no-config-dir" not in args)
+    except RuntimeError as exc:
+        print(f"cc: {exc}", file=sys.stderr)
+        return 1
+    print(f"Started Claude Desktop for '{name}' (pid {pid}).")
+    return 0
+
+
+def cmd_guard(args):
+    from . import guard
+    action = args[0] if args else "help"
+    label = args[1] if len(args) > 1 else "latest"
+    if action == "snapshot":
+        info = guard.snapshot(label)
+        print(f"Snapshot '{label}': {info['protected_files']} protected files in {len(info['roots'])} folders")
+        for root in info["roots"]:
+            print(f"  {root}")
+        print(f"Verify later with: cc guard verify {label}")
+        return 0
+    if action == "verify":
+        try:
+            ok, result = guard.verify(label)
+        except FileNotFoundError:
+            print(f"No snapshot named '{label}'. Take one first: cc guard snapshot {label}", file=sys.stderr)
+            return 2
+        print(guard.render(ok, result))
+        return 0 if ok else 1
+    print("Usage: cc guard snapshot [label] | cc guard verify [label]\n"
+          "  Detects changes to settings, configs, credentials, plugins and skills.\n"
+          "  Credential files are compared by size/time only; their contents are never read.")
+    return 0 if action == "help" else 2
 
 
 def cmd_switch(args):
@@ -310,6 +457,10 @@ def main(argv=None):
             return integrity.main(rest)
         if head in ("model", "models"):
             return models.main(rest)
+        if head == "desktop":
+            return cmd_desktop(rest)
+        if head == "guard":
+            return cmd_guard(rest)
         if head == "local":
             from . import local
             return local.main(rest)

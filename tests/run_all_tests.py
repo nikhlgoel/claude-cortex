@@ -45,6 +45,7 @@ TEST_MODULES = [
     "test_core_fixes",
     "test_audit_batch2",
     "test_local",
+    "test_profiles_adopt",
     "test_token_conservation",
     "test_memory_palace",
     "test_capacity_engine",

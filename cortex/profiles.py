@@ -55,14 +55,16 @@ def normalize_name(name: str) -> str:
 
 
 def list_profiles():
+    from . import registry
+    adopted = registry.names()
     root = profiles_dir()
     if not os.path.isdir(root):
-        return []
+        return adopted
     try:
-        return sorted(e for e in os.listdir(root)
-                      if os.path.isdir(os.path.join(root, e)))
+        managed = [e for e in os.listdir(root) if os.path.isdir(os.path.join(root, e))]
     except OSError:
-        return []
+        managed = []
+    return sorted(set(managed) | set(adopted))
 
 
 def current_profile_file() -> str:
@@ -105,6 +107,9 @@ def set_active(name: str) -> None:
 
 
 def profile_mode(name: str) -> str:
+    from . import registry
+    if registry.is_adopted(name):
+        return "adopted"
     path = os.path.join(profile_dir(name), ".profile_mode")
     try:
         with open(path, encoding="utf-8") as fh:
@@ -195,8 +200,15 @@ def _detach_links(target: str) -> list:
 
 
 def ensure_structure(name: str, mode: str = "synced") -> str:
-    """Create the profile directory, returning its canonical path."""
+    """Create the profile directory, returning its canonical path.
+
+    An adopted profile is returned as-is: nothing is created, linked or copied into a
+    folder that already holds a real account's data.
+    """
+    from . import registry
     name = normalize_name(name)
+    if registry.is_adopted(name):
+        return profile_dir(name)
     target = profile_dir(name)
     try:
         os.makedirs(target, exist_ok=True)
@@ -285,10 +297,13 @@ def seed_identity(name: str) -> bool:
     Without this the CLI treats the profile as a brand new install on every
     launch and re-runs the theme picker and login prompt.
     """
+    from . import registry
     target = profile_dir(name)
     status = auth_status(target)
     if not status.get("loggedIn"):
         return False
+    if registry.is_adopted(name):
+        return True                      # report the login; never rewrite an adopted folder
 
     config_path = os.path.join(target, ".claude.json")
     email = status.get("email")
@@ -363,7 +378,16 @@ def login(name: str) -> int:
 
 
 def remove(name: str) -> int:
+    from . import registry
     name = normalize_name(name)
+    if registry.is_adopted(name):
+        # Unregister only. The folder holds a real account's login and history and was
+        # not created by Cortex, so it is never deleted from here.
+        folder = profile_dir(name)
+        registry.forget(name)
+        _AUTH_CACHE.pop(folder, None)
+        print(f"Unregistered '{name}'. Its folder was left untouched: {folder}")
+        return 0
     target = profile_dir(name)
     if not os.path.isdir(target):
         print(f"Profile '{name}' does not exist.")

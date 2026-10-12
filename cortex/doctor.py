@@ -142,6 +142,13 @@ def report(repair=False):
 def _repair():
     """Fix only what is unambiguous. Returns the number of fixes applied."""
     fixed = 0
+    # Repair writes into profile folders, so it only touches ones Cortex created. An
+    # adopted folder holds a real account's data; it is reported on, never rewritten.
+    from . import registry
+    managed = [n for n in profiles.list_profiles() if not registry.is_adopted(n)]
+    skipped = [n for n in profiles.list_profiles() if registry.is_adopted(n)]
+    if skipped:
+        print(f"    leaving adopted profile(s) untouched: {', '.join(skipped)}")
 
     # Remove an out-of-range autoCompactWindow: there is no valid reason for it
     # and it is the direct cause of the compaction loop.
@@ -154,7 +161,7 @@ def _repair():
         print(f"    removed invalid autoCompactWindow={window} (backup written)")
         fixed += 1
 
-    for name in profiles.list_profiles():
+    for name in managed:
         prof_settings = os.path.join(profile_dir(name), "settings.json")
         pcfg = jsonfile.read(prof_settings, {})
         pwin = pcfg.get("autoCompactWindow")
@@ -165,7 +172,7 @@ def _repair():
             fixed += 1
 
     # Re-seed onboarding for profiles that are signed in but would re-onboard.
-    for name in profiles.list_profiles():
+    for name in managed:
         cfgp = os.path.join(profile_dir(name), ".claude.json")
         if not jsonfile.read(cfgp, {}).get("hasCompletedOnboarding"):
             if profiles.seed_identity(name):
@@ -173,7 +180,7 @@ def _repair():
                 fixed += 1
 
     # Replace a linked settings.json with a real copy.
-    for name in profiles.list_profiles():
+    for name in managed:
         settings = os.path.join(profile_dir(name), "settings.json")
         if os.path.islink(settings):
             try:

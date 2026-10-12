@@ -90,6 +90,13 @@ def shared_claude_dir() -> str:
 
 
 def profile_dir(name: str) -> str:
+    # An ADOPTED profile is an existing folder registered in place. Its path is returned
+    # verbatim - never re-canonicalised - because Claude Code derives the credential
+    # namespace from the exact string the login was created under.
+    from . import registry                      # late: registry imports this module
+    entry = registry.lookup(name)
+    if entry and entry.get("config_dir"):
+        return entry["config_dir"]
     return canonical_dir(os.path.join(profiles_dir(), name))
 
 
