@@ -25,10 +25,37 @@ file-history/
 .claude/settings.local.json
 tests/METRICS_REPORT.*
 
-# Distribution archives (tracked in releases/ or built dynamically)
+# Release archives are build output: scripts/build-releases.py makes them and they are uploaded to
+# GitHub Releases. They never belong in a commit (each one is a few hundred KB of binary diff).
+releases/
 dist/
 *.tmp
 *.log
+
+# Scratch and one-off files
+/a.exe
+/claude_decompiletest.exe
+/fix_batch_*.py
+/PLAN.md
+/TASKS.md
+
+# Written by tools/ghidra/update_watch.py on every run (cortex/integrity.py already excludes them)
+tools/ghidra/watch-state.json
+tools/ghidra/baseline-current.json
+
+# Other Python and tooling output
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+build/
+.coverage
+htmlcov/
+
+# Editor folders
+.idea/
+.vscode/
 
 # OS metadata
 .DS_Store
