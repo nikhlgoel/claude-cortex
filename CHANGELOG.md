@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 - 2026-10-14
+
+### Fixed - a saved provider was never used, and three smaller bugs
+
+- **`cc` now applies the provider you saved** (`cc provider set openrouter|gemini|anthropic`). Before, the
+  setting was stored but every session still ran on the subscription, so nothing changed after you
+  switched. With no key saved, `cc` now stops and says so instead of quietly billing the subscription.
+  `CORTEX_NO_PROVIDER=1` skips the saved provider for one launch. The offline local-model profile is
+  unaffected.
+- **Removing a Desktop-only profile** left a stale entry in the registry; it is now forgotten too (the
+  Desktop folder itself is never touched).
+- **`cc model`** showed router models such as `openrouter/auto` with a negative price; it now says `varies`.
+- **`/cc` in a chat** prints a first line saying whether the command ran or failed. Claude Code labels every
+  such reply "A hook blocked your prompt"; the line says what actually happened, and no tokens are used.
+
+### Added - a menu-driven beginner guide (`docs/GUIDE.html`)
+
+- One page at a time instead of one long scroll: menu with search, sections grouped by use case, a header
+  and footer with links, light and dark themes, tickable "is it working" checklist, copy buttons.
 
 ### Fixed - `install.exe` and `bin/claude.exe` did not work (shipped broken in 2.1.0)
 

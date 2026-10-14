@@ -38,7 +38,7 @@ from pathlib import Path
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "claude-cortex"
-SERVER_VERSION = "2.1.0"
+SERVER_VERSION = "2.2.0"
 
 HOME = Path.home()
 REPO = Path(__file__).resolve().parent.parent

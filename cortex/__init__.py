@@ -2,7 +2,7 @@
 
 import sys
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 #: Minimum interpreter. The core uses f-strings with ``=``-free formatting,
 #: ``from __future__ import annotations``, and ``os.replace`` semantics that are

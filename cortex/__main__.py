@@ -15,7 +15,7 @@ from . import capacity, doctor, ghidra, ide, integrity, launcher, mcp, models, p
 from .profiles import CortexError
 from .paths import profile_dir
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 # Recognized top-level commands, used for the "did you mean" hint.
 TOP_LEVEL_COMMANDS = (
