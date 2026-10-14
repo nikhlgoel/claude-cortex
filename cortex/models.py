@@ -166,8 +166,9 @@ def render(free_only=False, query=None, force=False, limit=40):
         else:
             pin = _price_per_million(pricing, "prompt")
             pout = _price_per_million(pricing, "completion")
-            in_p = f"${pin:.2f}" if pin is not None else "?"
-            out_p = f"${pout:.2f}" if pout is not None else "?"
+            # OpenRouter reports -1 for router models whose price depends on the route taken.
+            in_p = "varies" if pin is not None and pin < 0 else (f"${pin:.2f}" if pin is not None else "?")
+            out_p = "varies" if pout is not None and pout < 0 else (f"${pout:.2f}" if pout is not None else "?")
         ctx_str = f"{ctx // 1000}k" if ctx else "-"
         lines.append(f"    {model_id:<44}{ctx_str:>9}  {in_p:>8}  {out_p:>8}")
 

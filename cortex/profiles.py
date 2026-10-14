@@ -404,6 +404,10 @@ def remove(name: str) -> int:
 
     shutil.rmtree(target, ignore_errors=True)
     _AUTH_CACHE.pop(target, None)
+    # A Desktop-only registry entry has no config_dir, so it took this path; drop the
+    # entry too or it outlives the profile. The Desktop folder itself is never touched.
+    if registry.lookup(name):
+        registry.forget(name)
 
     # ignore_errors hides failures (a file held open on Windows, for instance), so
     # check the result rather than announcing a removal that did not happen.

@@ -85,14 +85,43 @@ NON_INTERACTIVE = frozenset({
 })
 
 
+# Read-only subcommands of commands that otherwise start servers, windows or downloads.
+SAFE_SUBCOMMANDS = {
+    "graph": frozenset({"status"}),
+    "local": frozenset({"status", "list", "ls", "doctor", "env"}),
+}
+
+
+def core_explains(name):
+    """True when the core answers ``name`` with a one-line explanation (retired or session-only command)."""
+    try:
+        command, base = cortex_command()
+        if not command:
+            return False
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        from cortex import tools
+        return tools.is_retired(name) or tools.is_in_session_only(name)
+    except Exception:
+        return False
+
+
 def route(args):
     """Return ``(args, None)`` to run, or ``(None, message)`` to refuse."""
-    if not args or args[0].lower() not in NON_INTERACTIVE:
-        shown = args[0] if args else ""
-        return None, (f"cc: '{shown}' starts an interactive session or login, "
-                      f"which cannot run inside a prompt hook.\n"
-                      f"    Run it in a terminal:  cc {' '.join(args)}".rstrip())
-    return args, None
+    head = args[0].lower() if args else ""
+    if head in NON_INTERACTIVE or core_explains(head):
+        return args, None
+    safe = SAFE_SUBCOMMANDS.get(head)
+    if safe and len(args) > 1 and args[1].lower() in safe and "--smoke" not in args:
+        return args, None
+    if safe:
+        return None, (f"cc: 'cc {head} {' '.join(args[1:])}' can start a server, window or download, "
+                      f"so it runs in a terminal, not here.\n"
+                      f"    Allowed here: cc {head} " + " | ".join(sorted(safe)) +
+                      f"\n    Terminal:  cc {' '.join(args)}")
+    return None, (f"cc: '{head}' cannot run inside a prompt (it may start a login or a session, "
+                  f"or it is not a cc command).\n"
+                  f"    Run it in a terminal:  cc {' '.join(args)}".rstrip())
 
 
 def routing_hint(prompt, cwd):
@@ -158,8 +187,16 @@ def run_cortex(args):
                                 encoding="utf-8", errors="replace",
                                 stdin=subprocess.DEVNULL, timeout=120, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
-        return f"cc: {exc}"
-    return (result.stdout or "") + (result.stderr or "")
+        return f"cc: {exc}", 1
+    return (result.stdout or "") + (result.stderr or ""), result.returncode
+
+
+def banner(args, code):
+    """First line of the result. Claude Code labels every exit-2 hook "blocked your prompt", so say what really happened."""
+    ran = "cc " + " ".join(args)
+    if code == 0:
+        return f"[{ran}: done - ran locally, no tokens used]"
+    return f"[{ran}: FAILED (exit {code}) - ran locally, no tokens used]"
 
 
 def main():
@@ -192,7 +229,11 @@ def main():
 
     if args is not None:
         runnable, refusal = route(args)
-        output = refusal if refusal else run_cortex(runnable)
+        if refusal:
+            output = refusal
+        else:
+            text, code = run_cortex(runnable)
+            output = banner(runnable, code) + "\n" + text.strip()
         # Exit 2 blocks the model and shows stderr to the user, at no token cost.
         print(output.strip(), file=sys.stderr)
         return 2

@@ -148,6 +148,34 @@ def translate_args(argv):
     return out, None
 
 
+def provider_env():
+    """Environment for the saved provider (``cc provider set``), or ``({}, None)`` for the default.
+
+    Returns ``(env, error)``. Saving a provider used to change nothing at launch; only
+    ``cc provider env`` printed the variables. A provider that cannot be applied (no key)
+    is an error rather than a silent fall back to a different billing account.
+    ``CORTEX_NO_PROVIDER=1`` skips it for one launch.
+    """
+    if os.environ.get("CORTEX_NO_PROVIDER"):
+        return {}, None
+    try:
+        import importlib.util
+        from . import tools
+        path = tools.find_script("claude-provider.py")
+        if not path:
+            return {}, None
+        spec = importlib.util.spec_from_file_location("cortex_provider_script", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if module.get_active_provider() == "oauth":
+            return {}, None
+        return module.get_env_for_provider(), None
+    except SystemExit:
+        return None, "the saved provider has no API key. Run 'cc provider key <name>' or 'cc provider set oauth'."
+    except Exception as exc:
+        return None, f"could not apply the saved provider ({exc}). Run 'cc provider set oauth' to use your subscription."
+
+
 def launch(profile: str, argv, extra_env=None, continue_session=False):
     """Exec a Claude Code session under ``profile``."""
     exe = binary.find()
@@ -159,6 +187,11 @@ def launch(profile: str, argv, extra_env=None, continue_session=False):
 
     profile = profiles.normalize_name(profile)
     config_dir = profiles.ensure_structure(profile, profiles.profile_mode(profile))
+    saved, error = provider_env()
+    if error:
+        print(f"cc: {error}", file=sys.stderr)
+        return 1
+    extra_env = {**saved, **(extra_env or {})} or None
     return launch_dir(config_dir, argv, extra_env=extra_env, continue_session=continue_session,
                       exe=exe)
 

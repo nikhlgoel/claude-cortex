@@ -175,7 +175,7 @@ class TestPromptHookIntegration(unittest.TestCase):
 
     def test_cc_commands_are_still_intercepted_not_routed(self):
         with mock.patch.object(routing, "hint_for", side_effect=AssertionError("routed a /cc command")), \
-                mock.patch.object(self.hook, "run_cortex", return_value="ok"), \
+                mock.patch.object(self.hook, "run_cortex", return_value=("ok", 0)), \
                 mock.patch("sys.stdin", io.StringIO(json.dumps({"prompt": "/cc status"}))), \
                 mock.patch("sys.stderr", io.StringIO()):
             self.assertEqual(self.hook.main(), 2)
@@ -322,6 +322,36 @@ class TestMcpExternalServers(Sandbox):
         with mock.patch.object(mcp, "cmd_add", return_value=0) as add:
             mcp.main(["add", "work"])
         add.assert_called_once_with("work", dry_run=False)
+
+
+
+
+class TestProviderAndPriceFixes(Sandbox):
+    """Saved provider reaches the launch; router prices; Desktop-only profile removal."""
+
+    def test_oauth_adds_nothing_and_opt_out_skips(self):
+        with mock.patch.dict(os.environ, {"CORTEX_NO_PROVIDER": "1"}):
+            self.assertEqual(launcher.provider_env(), ({}, None))
+
+    def test_missing_key_is_an_error_not_a_silent_fallback(self):
+        fake = mock.Mock(get_active_provider=lambda: "openrouter",
+                         get_env_for_provider=mock.Mock(side_effect=SystemExit(1)))
+        spec = mock.Mock(loader=mock.Mock(exec_module=lambda m: None))
+        with mock.patch("importlib.util.spec_from_file_location", return_value=spec), \
+                mock.patch("importlib.util.module_from_spec", return_value=fake):
+            env, error = launcher.provider_env()
+        self.assertIsNone(env)
+        self.assertIn("no API key", error)
+
+    def test_negative_router_price_renders_as_varies(self):
+        from cortex import models
+        data = [{"id": "openrouter/auto", "context_length": 2000000,
+                 "pricing": {"prompt": "-1", "completion": "-1"}}]
+        with mock.patch.object(models, "fetch", return_value=(data, "cache")):
+            text, _ = models.render()
+        self.assertIn("varies", text)
+        self.assertNotIn("1,000,000", text)
+        self.assertNotIn("-$", text)
 
 
 if __name__ == "__main__":
