@@ -1,0 +1,20 @@
+{
+ "guard.py": {
+  "mtime": 1791824081.7592819,
+  "seen": 1791824085.048006,
+  "ast_hash": "af168e2ea778ced0ae2a16c6b5675b76",
+  "semantic_hash": ""
+ },
+ "paths.py": {
+  "mtime": 1791824081.7504208,
+  "seen": 1791824085.048006,
+  "ast_hash": "d7085cbd4f7d89500b119ea930db5620",
+  "semantic_hash": ""
+ },
+ "registry.py": {
+  "mtime": 1791824081.745378,
+  "seen": 1791824085.048006,
+  "ast_hash": "a86998a9e6ce56a8ed59f79c0e278eac",
+  "semantic_hash": ""
+ }
+}

@@ -1,6 +1,6 @@
 # Cortex 3: a layered Memory Palace, a Studio mod, and a Swarm
 
-Status: **design and research only - nothing in this document is built yet.** Facts taken from
+Status: **the Palace (section 2, phases P0-P3 and the Graphify link) is built and documented in [PALACE.md](PALACE.md). A first slice of Studio is also built, as a standalone map and floating button rather than a Claude Code mod: see [ATLAS.md](ATLAS.md) and [CONTEXT.md](CONTEXT.md). The rest of Studio (the mod, themes, status line; section 3) and Swarm (section 4) are design only.** Facts taken from
 Anthropic's documentation are marked **[verified]** with the page; everything else is a
 proposal, and anything I could not confirm is marked **[unverified]**. Researched 2026-10-12.
 

@@ -35,6 +35,63 @@ def register_desktop_mcp(cfg_path, command, script):
     return surfaces.register_desktop_mcp(cfg_path, command, script)
 
 
+#: Folders inside ~/.claude that this installer writes into (so they are what a backup must keep).
+_BACKUP_DIRS = ("commands", "rules", "scripts", "skills", "agents", "hooks")
+#: Never worth archiving: regenerable, and the reason a full-folder archive took hours.
+_BACKUP_SKIP = {"node_modules", "__pycache__", ".git", "cache", ".cache"}
+_BACKUP_MAX_FILE_MB = 5
+
+
+def _backup_limit_mb():
+    """How big a folder may be before the installer leaves it in place instead of copying it."""
+    try:
+        return max(1, int(os.environ.get("CORTEX_BACKUP_LIMIT_MB", "300")))
+    except ValueError:
+        return 300
+
+
+def _tree_size_mb(path, limit_mb):
+    """Size of a folder in MB, giving up as soon as it is clearly over ``limit_mb``."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+            if total > limit_mb * 1048576:
+                return total / 1048576.0
+    return total / 1048576.0
+
+
+def _backup_members(claude_dir):
+    """The small files worth archiving: top-level config in ``~/.claude`` and the folders the installer
+    writes into. Skips caches and any single file over a few MB."""
+    cap = _BACKUP_MAX_FILE_MB * 1048576
+
+    def small(fp):
+        try:
+            return fp.is_file() and fp.stat().st_size <= cap
+        except OSError:
+            return False
+
+    if not claude_dir.is_dir():
+        return
+    for entry in sorted(claude_dir.iterdir()):
+        if small(entry):
+            yield entry
+    for name in _BACKUP_DIRS:
+        folder = claude_dir / name
+        if not folder.is_dir():
+            continue
+        for root, dirs, files in os.walk(folder):
+            dirs[:] = [d for d in dirs if d not in _BACKUP_SKIP]
+            for fname in files:
+                fp = Path(root) / fname
+                if small(fp):
+                    yield fp
+
+
 def merge_settings(src_path, dest_path):
     """Add Cortex's hooks and defaults to the user's settings.json without losing theirs.
 
@@ -342,19 +399,28 @@ def main():
         shutil.copy2(user_claude_json, staging_dir / ".claude.json")
         print("  ✓ Staged authentication & account credentials (.claude.json)")
 
-    projects_dir = claude_dir / "projects"
-    if projects_dir.exists() and projects_dir.is_dir():
-        shutil.copytree(projects_dir, staging_dir / "projects", dirs_exist_ok=True)
-        print("  ✓ Staged user project memory & conversation histories")
-
-    for item in ["file-history", "history.jsonl", "config.json"]:
+    # What is backed up is what this installer can change, plus the account file - not a full copy of
+    # ~/.claude. On a real machine that folder is gigabytes of conversation history and plugin caches
+    # which the installer never touches; zipping all of it took hours (every small file is scanned by
+    # antivirus) and several GB of disk. Big folders are measured and left in place with a note;
+    # `cc guard snapshot` / `cc guard verify` is the check that they were not changed.
+    limit_mb = _backup_limit_mb()
+    for item in ["projects", "file-history", "history.jsonl", "config.json"]:
         p = claude_dir / item
-        if p.exists():
-            if p.is_dir():
-                shutil.copytree(p, staging_dir / item, dirs_exist_ok=True)
-            else:
-                shutil.copy2(p, staging_dir / item)
+        if not p.exists():
+            continue
+        size_mb = _tree_size_mb(p, limit_mb) if p.is_dir() else p.stat().st_size / 1048576.0
+        if size_mb > limit_mb:
+            print(f"  ℹ Left {item} in place ({'over ' if p.is_dir() else ''}{size_mb:,.0f} MB, more than the "
+                  f"{limit_mb} MB backup limit). The installer does not touch it.")
+            continue
+        if p.is_dir():
+            shutil.copytree(p, staging_dir / item, dirs_exist_ok=True)
+        else:
+            shutil.copy2(p, staging_dir / item)
+        print(f"  ✓ Staged {item}")
 
+    members = list(_backup_members(claude_dir))
     # Archive to zip/tar
     if is_windows:
         backup_archive = backup_dir / f"claude-backup-{timestamp}.zip"
@@ -362,14 +428,12 @@ def main():
             with zipfile.ZipFile(backup_archive, "w", zipfile.ZIP_DEFLATED) as zf:
                 if user_claude_json.exists():
                     zf.write(user_claude_json, ".claude.json")
-                for root, _, files in os.walk(claude_dir):
-                    for file in files:
-                        fp = Path(root) / file
-                        rel = fp.relative_to(home)
-                        zf.write(fp, str(rel))
+                for fp in members:
+                    zf.write(fp, str(fp.relative_to(home)))
             size_mb = backup_archive.stat().st_size / (1024 * 1024)
             shutil.copy2(backup_archive, backup_dir / "latest.zip")
-            print(f"  ✓ Safe pre-installation archive created: {backup_archive.name} ({size_mb:.2f} MB)")
+            print(f"  ✓ Safe pre-installation archive created: {backup_archive.name} "
+                  f"({size_mb:.2f} MB, {len(members)} files)")
         except Exception as e:
             print(f"  ⚠ Backup archive note: {e}")
     else:
@@ -378,10 +442,11 @@ def main():
             with tarfile.open(backup_archive, "w:gz") as tf:
                 if user_claude_json.exists():
                     tf.add(user_claude_json, arcname=".claude.json")
-                if claude_dir.exists():
-                    tf.add(claude_dir, arcname=".claude")
+                for fp in members:
+                    tf.add(fp, arcname=str(fp.relative_to(home)), recursive=False)
             size_mb = backup_archive.stat().st_size / (1024 * 1024)
-            print(f"  ✓ Safe pre-installation archive created: {backup_archive.name} ({size_mb:.2f} MB)")
+            print(f"  ✓ Safe pre-installation archive created: {backup_archive.name} "
+                  f"({size_mb:.2f} MB, {len(members)} files)")
         except Exception as e:
             print(f"  ⚠ Backup archive note: {e}")
 
@@ -635,6 +700,7 @@ def main():
     print("  cc status                  Per-profile capacity (unknown stays unknown)")
     print("  cc continue                Resume the last conversation on a profile with room")
     print("  cc ide check | apply       Point IDE extensions at a profile (no files modified)")
+    print("  cc palace init             Give this project a memory (one command, no questions)")
     print("  cc palace | remember | recall   Project memory")
     print("  cc analyze <path>          Static risk analysis of source code")
     print("  cc --help                  Everything else")

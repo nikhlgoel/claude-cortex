@@ -11,9 +11,9 @@ Search across all rooms (or a specific room) in the Memory Palace for past bug f
 ## Instructions for Claude
 
 1. Extract the query or search topic from the user's input.
-   If the user specifies a room (e.g., "in graveyard", "blueprint", "procedures", "decisions", "study"), pass `--room <room>`.
+   Add `--explain` if the user wants to know why a memory was chosen, `--history` to include replaced (older) versions, and `--file <path>` for a file they are working on.
 2. Execute the recall search via Bash:
    ```bash
-   claude-palace recall [--room <room>] "<query>"
+   cc palace recall "<query>"
    ```
 3. Synthesize the findings and explain how past project experiences directly apply to the current task.

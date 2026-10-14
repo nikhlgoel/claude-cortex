@@ -18,7 +18,19 @@
 
 set -eu
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="${BASH_SOURCE[0]}"
+# Git Bash / MSYS / Cygwin can be handed a Windows path (bash C:\x\install.sh). dirname only
+# understands "/", would answer ".", and the script would quietly use whatever folder you are in.
+ON_WINDOWS=0
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) ON_WINDOWS=1; SRC="${SRC//\\//}" ;;
+esac
+HERE="$(cd "$(dirname "$SRC")" && pwd)"
+# pwd answers with a POSIX path (/tmp/x). A native Windows Python resolves that against the current
+# drive instead, so hand it the Windows spelling (C:/Users/x, which every Python accepts).
+if [ "$ON_WINDOWS" = 1 ] && command -v cygpath >/dev/null 2>&1; then
+    HERE="$(cygpath -m "$HERE")"
+fi
 
 if [ -z "${HOME:-}" ] || [ ! -d "${HOME}" ]; then
     echo "error: HOME is not set to an existing directory; refusing to continue." >&2

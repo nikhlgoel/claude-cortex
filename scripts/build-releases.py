@@ -50,7 +50,7 @@ DIST_DIR = DIST_PARENT / f"v{VERSION}"
 
 # What every working install needs. `cortex` is the one that was missing.
 CORE = ("cortex", "scripts", "config", "bin", "skills", "completion", "tools", "docs",
-        "README.md", "uninstall.sh")
+        "native", "README.md", "uninstall.sh")
 INSTALLERS = ("install.sh", "install.ps1", "install.cmd", "install.py", "install.exe")
 
 #: Items that may be absent (with a warning) rather than failing the build.

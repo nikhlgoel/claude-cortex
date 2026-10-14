@@ -12,7 +12,7 @@ Inspect the current project's Memory Palace structure, rooms, and indexed tags.
 
 1. Run the Memory Palace status inspection via Bash:
    ```bash
-   claude-palace status
+   cc palace status
    ```
 
 2. Provide a brief overview of the rooms and ask the user if they'd like to:

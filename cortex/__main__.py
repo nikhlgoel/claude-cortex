@@ -68,7 +68,8 @@ Analysis
   cc mcp add                      Give Claude Cortex's tools via MCP
 
 Tools
-  cc palace | remember | recall   Memory palace
+  cc palace init                  Set up this project's memory (one command)
+  cc palace | remember | recall   Layered project memory; see docs/PALACE.md
   cc model [free|<search>]        Live model catalog with real pricing
   cc provider | update            API providers, updates
   cc analyze <path>               Static risk analysis of source code

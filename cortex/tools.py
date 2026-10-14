@@ -22,6 +22,8 @@ TOOLS = {
     "palace":   ("claude-palace.py", []),
     "remember": ("claude-palace.py", ["remember"]),
     "recall":   ("claude-palace.py", ["recall"]),
+    # The interactive project map (cortex/atlas). Runs in-process, like the palace.
+    "graph":    ("(in process)", []),
     # Static risk analysis of source code (file/line/mechanism). Formerly named
     # "dream"; renamed because dream is now the in-session concept explorer and
     # this is a linter, which is a different thing.
@@ -118,8 +120,26 @@ def explain_in_session(command):
     return 0
 
 
+#: Commands served by the in-process palace engine (cortex/palace) instead of a script.
+PALACE_COMMANDS = {"palace": [], "remember": ["remember"], "recall": ["recall"]}
+
+
 def run(command, args):
     """Run a tool script. Returns its exit code."""
+    if command in PALACE_COMMANDS:
+        try:
+            from .palace import cli as palace_cli
+        except ImportError as exc:                      # e.g. a Python built without sqlite3
+            print(f"cc: the memory palace needs Python's sqlite3 module: {exc}", file=sys.stderr)
+            return 1
+        return palace_cli.main(PALACE_COMMANDS[command] + list(args))
+    if command == "graph":
+        try:
+            from .atlas import cli as atlas_cli
+        except ImportError as exc:                      # e.g. a Python built without sqlite3
+            print(f"cc: the project map needs Python's sqlite3 module: {exc}", file=sys.stderr)
+            return 1
+        return atlas_cli.main(list(args))
     script_name, prefix = TOOLS[command]
     script = find_script(script_name)
     if not script:

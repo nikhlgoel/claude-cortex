@@ -319,5 +319,100 @@ class TestPrimaryProfile(InstallerSandbox):
         self.assertIn("Skipped the primary", result.stdout)
 
 
+class TestBackupIsBounded(InstallerSandbox):
+    """The first real run on a real machine zipped the whole of ~/.claude (3.5 GB, 13,000 files: conversation
+    history and plugin caches the installer never touches), staged it a second time, and had not finished
+    after 11 minutes. The backup now keeps what the installer can change and measures the rest."""
+
+    def make_claude_home(self, big_mb=0):
+        claude = os.path.join(self.home, ".claude")
+        for rel, text in {"settings.json": '{"model": "opus"}', "CLAUDE.md": "# mine",
+                          os.path.join("commands", "mine.md"): "my command",
+                          os.path.join("rules", "r.md"): "my rule",
+                          os.path.join("plugins", "cache", "junk.js"): "x" * 100,
+                          os.path.join("commands", "node_modules", "dep.js"): "x" * 100,
+                          os.path.join("projects", "p1", "small.jsonl"): "{}\n"}.items():
+            full = os.path.join(claude, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        if big_mb:
+            with open(os.path.join(claude, "projects", "p1", "big.jsonl"), "wb") as fh:
+                fh.write(b"\0" * (big_mb * 1048576))
+        with open(os.path.join(self.home, ".claude.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"oauthAccount": {"emailAddress": "synthetic@example.invalid"}}')
+        return claude
+
+    def backups(self):
+        folder = os.path.join(self.home, ".claude-backups")
+        archives = [n for n in os.listdir(folder) if n.startswith("claude-backup-")]
+        staged = [n for n in os.listdir(folder) if n.startswith("staged_user_data_")]
+        return folder, archives, staged
+
+    def archive_names(self, folder, archive):
+        import tarfile
+        import zipfile
+        path = os.path.join(folder, archive)
+        if archive.endswith(".zip"):
+            with zipfile.ZipFile(path) as zf:
+                return [n.replace("\\", "/") for n in zf.namelist()]
+        with tarfile.open(path) as tf:
+            return tf.getnames()
+
+    def test_the_archive_holds_what_the_installer_can_change_and_skips_caches(self):
+        self.make_claude_home()
+        result = self.install("--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder, archives, _staged = self.backups()
+        names = self.archive_names(folder, archives[0])
+        for wanted in (".claude.json", ".claude/settings.json", ".claude/CLAUDE.md", ".claude/commands/mine.md",
+                       ".claude/rules/r.md"):
+            self.assertIn(wanted, names)
+        self.assertFalse([n for n in names if "plugins/cache" in n or "node_modules" in n or "/projects/" in n], names)
+
+    def test_a_small_history_is_still_staged(self):
+        self.make_claude_home()
+        self.install("--yes")
+        folder, _archives, staged = self.backups()
+        self.assertTrue(os.path.exists(os.path.join(folder, staged[0], "projects", "p1", "small.jsonl")))
+        self.assertTrue(os.path.exists(os.path.join(folder, staged[0], ".claude.json")))
+
+    def test_a_history_over_the_limit_is_left_in_place_and_says_so(self):
+        claude = self.make_claude_home(big_mb=3)
+        env = self.env()
+        env["CORTEX_BACKUP_LIMIT_MB"] = "1"
+        result = subprocess.run([sys.executable, INSTALL, "--yes"], env=env, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=240, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Left projects in place", result.stdout)
+        folder, archives, staged = self.backups()
+        self.assertFalse(os.path.exists(os.path.join(folder, staged[0], "projects")))
+        self.assertTrue(os.path.exists(os.path.join(claude, "projects", "p1", "big.jsonl")), "the original must be untouched")
+        self.assertLess(os.path.getsize(os.path.join(folder, archives[0])), 1048576)
+
+    def test_a_garbled_limit_falls_back_to_the_default(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cortex_install_under_test", INSTALL)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for value, expected in (("abc", 300), ("", 300), ("0", 1), ("-5", 1), ("50", 50)):
+            os.environ["CORTEX_BACKUP_LIMIT_MB"] = value
+            self.addCleanup(os.environ.pop, "CORTEX_BACKUP_LIMIT_MB", None)
+            self.assertEqual(module._backup_limit_mb(), expected, value)
+
+    def test_measuring_a_folder_stops_early_instead_of_walking_all_of_it(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cortex_install_under_test2", INSTALL)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        folder = os.path.join(self.root, "many")
+        os.makedirs(folder)
+        for i in range(50):
+            with open(os.path.join(folder, "f%d.bin" % i), "wb") as fh:
+                fh.write(b"\0" * 1048576)
+        self.assertGreater(module._tree_size_mb(folder, 2), 2)
+        self.assertLess(module._tree_size_mb(folder, 2), 50)       # it gave up long before counting them all
+
+
 if __name__ == "__main__":
     unittest.main()

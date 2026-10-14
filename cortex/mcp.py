@@ -42,7 +42,7 @@ EXTERNAL = {
 
 # The tools scripts/cortex-mcp.py exposes. Kept in step with its TOOLS table by
 # tests/test_core_fixes.py, so this list cannot silently go stale.
-TOOL_NAMES = ("account_status", "recall_memory", "remember",
+TOOL_NAMES = ("account_status", "recall_memory", "remember", "verify_refs",
               "analyze_code_risks", "decompile_binary", "evaluate_impact")
 
 

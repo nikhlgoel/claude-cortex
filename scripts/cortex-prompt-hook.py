@@ -109,6 +109,38 @@ def routing_hint(prompt, cwd):
         return None
 
 
+def memory_context(prompt, payload):
+    """Relevant project memory for ``prompt``, or None. Any failure means "no memory", never an error."""
+    try:
+        command, base = cortex_command()
+        if not command:
+            return None
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        from cortex.palace import hook
+        data = payload if isinstance(payload, dict) else {}
+        return hook.context_for(prompt, cwd=data.get("cwd"), session=data.get("session_id"))
+    except Exception:
+        return None
+
+
+def touch_session(payload):
+    """Tell the project-map button this session is still alive. Failure means nothing."""
+    try:
+        data = payload if isinstance(payload, dict) else {}
+        if not data.get("session_id"):
+            return
+        command, base = cortex_command()
+        if not command:
+            return
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        from cortex.atlas import sessions
+        sessions.touch_session(data["session_id"])
+    except Exception:
+        pass
+
+
 def run_cortex(args):
     """Run a Cortex command and return its combined output."""
     command, base = cortex_command()
@@ -168,9 +200,12 @@ def main():
     # Anything else is a real prompt. Never block or rewrite it; at most add one short
     # line of context pointing at a specialised tool the prompt clearly calls for.
     hint = routing_hint(prompt, payload.get("cwd") if isinstance(payload, dict) else None)
-    if hint:
+    touch_session(payload)
+    memory = memory_context(prompt, payload)
+    extra = "\n\n".join(part for part in (hint, memory) if part)
+    if extra:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
-                                                 "additionalContext": hint}}))
+                                                 "additionalContext": extra}}))
     return 0
 
 

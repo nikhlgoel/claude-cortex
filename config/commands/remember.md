@@ -6,7 +6,7 @@ command: true
 
 # Store Memory in the Palace
 
-Deposit a structured memory entry into one of the designated rooms of the Memory Palace:
+Store a memory in the project's layered palace. Choose a kind (the old rooms still work as `--room`):
 - `blueprint`: System architecture, schemas, boundaries, APIs
 - `procedures`: Workflows, build recipes, test commands
 - `graveyard`: Bugs solved, tricky pitfalls, things never to repeat
@@ -23,6 +23,6 @@ Deposit a structured memory entry into one of the designated rooms of the Memory
    - Choice/trade-off -> `decisions`
 3. Execute the memory deposit via Bash:
    ```bash
-   claude-palace remember --room <room> --title "<title>" --content "<content>" --tags <tag1> <tag2>
+   cc palace remember --title "<title>" --content "<content>" --kind <kind> [--file <path>] [--supersedes <id>]
    ```
 4. Confirm to the user which room received the memory and why it will make future coding smarter.

@@ -1,5 +1,74 @@
 # Changelog
 
+## Unreleased
+
+### Fixed - `install.exe` and `bin/claude.exe` did not work (shipped broken in 2.1.0)
+
+- Double-clicking the 2.1.0 `install.exe` printed `& : The term 'C' is not recognized...`. The old stub
+  pasted a UTF-16 path into a PowerShell command with `printf("%s")`, which prints one character - so it
+  asked PowerShell to run a program called `C`. It also hung when started from a script. No test ever ran
+  the `.exe` files; that is how it shipped.
+- Both are rebuilt from source that is now in the repository (`native/launcher.c`, built by
+  `scripts/build-launchers.py`, reproducibly). They start no shell at all: Python is found and started
+  directly, with arguments quoted by the Windows rules, so a path or argument with spaces, `& ( ) ' % ^ !`
+  or accents arrives intact whatever started them (double-click, cmd, PowerShell, Git Bash, a script).
+  Double-clicked, the window waits for Enter so a message can be read; from a terminal it never waits.
+- New tests start every launcher (`.exe`, `.cmd`, `.ps1`, `.sh`) from a folder named
+  `we ird & (name) 'q' 100%x% ^ !g! ünï` and check the arguments and exit code come through unchanged. A test
+  also fails if the committed `.exe` files stop matching `native/launcher.c`.
+- `install.sh` run by Git Bash with a Windows path (`bash C:\x\install.sh`) used the current folder
+  instead of its own.
+- `CORTEX_HOME` meant "where the Cortex code is" to the shims but "where the data is" to the new palace;
+  the palace now uses its own `CORTEX_DATA_DIR`.
+
+### Added - the project map and floating button (`cc graph`, see docs/ATLAS.md)
+
+- **A floating button** that appears while a Claude session is open in a project with a Graphify graph or
+  a palace; click to open the map in its own window, click again to close it. Drag it, right-click it,
+  hover for a summary; a badge counts notes whose code changed. `cc graph button off` removes it.
+- **The map**: the project's files as a force-directed graph grouped by Graphify's areas, with the palace's
+  notes pinned to the files they are about (green = code unchanged, amber = code changed since, red = code
+  gone), functions on demand, search, and a side panel. Local, read-only, no network.
+- A session hook (`SessionStart`, `SessionEnd`, `Stop`) feeds the button and does the two jobs below.
+
+### Added - keeping Graphify, the palace and the context window honest (docs/CONTEXT.md)
+
+- **After a compaction or `/clear` the palace may show memory again** (and the always-on core). It used to
+  keep refusing to repeat anything it had shown earlier in the session, even after that text had been
+  summarised away.
+- **`cc palace verify`** and the **`verify_refs`** MCP tool check the files and `backticked` names in a
+  piece of text against the project and its code graph: a wrong name is reported with the closest real one
+  ("did you mean `cortex/guard.py`"); library code and generic words are never called wrong.
+- **`cc palace ground on`** (off by default) makes that check automatic on Claude's final answer, once.
+
+### Fixed - found by the new tests
+
+- The Graphify bridge did not resolve methods: Graphify writes them as `.name()` and the leading dot stayed.
+  Existing caches rebuild on first use.
+- The map's local server could share its port with another program on Windows (`SO_REUSEADDR`); the bind
+  is now exclusive.
+
+### Added - the layered memory palace (`cortex/palace`, see docs/PALACE.md)
+
+- **`cc palace init`**: one command, no questions - creates the project's palace, imports an old (v2.5)
+  one without touching it, links a Graphify graph if present.
+- **Layers, not a pile**: scratch / core / episodic / semantic / procedural / archive tiers; every memory
+  has a kind, trust, importance, confidence, validity dates and three sizes (headline, gist, full).
+- **Facts keep their history**: a same-titled decision replaces the old one, which is kept, dated and linked.
+  (The old palace discarded "pool size 10 -> 50 after the outage" as a duplicate.)
+- **Graphify integration** (read-only, optional): memories are anchored to files/symbols; memories about
+  neighbouring code rank up; a memory whose code changed is flagged and demoted.
+- **Automatic, careful delivery**: the prompt hook adds relevant memory (never repeated within a session, never
+  for commands, silent when evidence is thin, off with `CORTEX_PALACE=off` or `cc palace inject off`).
+- **Measured**: `cc palace eval` scores retrieval on paraphrased questions, knowledge updates and prompts that
+  must get nothing, against the old scorer: false injection 0% vs 76%, changed facts 100% vs 0%.
+- MCP tools `remember` / `recall_memory` use the new engine (`kind`, `files`, `supersedes`, `project_dir`).
+
+### Changed
+
+- `scripts/claude-palace.py` is now legacy (the import source and the baseline); `cc palace`, the MCP tools,
+  the slash commands and the hook no longer use it.
+
 ## 2.1.0
 
 Your own accounts first: adopt the Claude folders you already have, use them from the

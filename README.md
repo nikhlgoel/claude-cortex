@@ -49,8 +49,13 @@ Windows (any of these; they all run the same `install.py`):
 .\install.ps1 -DryRun
 .\install.ps1 -Surfaces terminal,desktop
 install.cmd --dry-run          # also works by double-click
+install.exe --dry-run          # double-click or run it; starts no shell, so it works from any
 python install.py --help
 ```
+
+`install.exe` only finds Python and runs `install.py` beside it (source: `native/launcher.c`); it needs
+the whole extracted folder, not the `.exe` alone. Windows may warn about it ("unknown publisher"): it is
+not code-signed. `install.cmd` does the same job and is plain text you can read.
 
 `--surfaces` is any mix of `terminal`, `ide` and `desktop`; ask-me-later is fine, and
 `cc profile surfaces <name> terminal,ide,desktop` adds more at any time. The choice only
@@ -104,7 +109,11 @@ cc -- <prompt>              # send a prompt even if it looks like a command
 Tools:
 
 ```bash
-cc palace | remember | recall    # memory palace (stores and retrieves)
+cc palace init                   # one command: give this project a layered, Graphify-aware memory
+cc palace | remember | recall    # store and find project memory (see docs/PALACE.md)
+cc palace verify "<text>"        # check the files and `names` in a piece of text exist (docs/CONTEXT.md)
+cc graph                         # the project map: files, links and notes (docs/ATLAS.md)
+cc graph button off              # the floating button that opens it appears on its own; this stops it
 cc model | provider | update     # live model catalog, API providers, updates
 cc research <topic>              # live arXiv retrieval (real)
 cc analyze <path>                # static risk analysis of source (file, line, mechanism)
@@ -255,6 +264,12 @@ not declare. See [tests/sandbox/README.md](tests/sandbox/README.md).
 - **`cc status` reports what Claude Code has cached locally.** It does not query
   a usage API. Profiles with no recorded usage show *unknown*, and `cc continue`
   will not auto-select them - missing data is not evidence of free capacity.
+- **The project map and floating button are checked on Windows only.** A real graph was drawn, the button was
+  shown on a real desktop and a scripted test opened and closed the map window; macOS/Linux code paths have
+  not been run, and whether the Claude Desktop app's Code tab runs the session hook is unconfirmed.
+- **Grounding checks names, not reasoning.** `cc palace verify` can tell you a file or function does not
+  exist; it cannot tell you an argument is wrong. Nothing here makes a model stop hallucinating - it makes
+  one kind of mistake (an invented name) easy to catch.
 - **Antigravity integration cannot be tested in CI** (Windows-only app). Its
   settings are generated and statically validated; verify by launching it.
 - **Local models are tested with fakes, not yet with a real model.** The consent gate,
@@ -271,7 +286,10 @@ not declare. See [tests/sandbox/README.md](tests/sandbox/README.md).
 - [Tool routing](docs/TOOL_ROUTING.md) - Scrapling, Graphify, Spec Kit and ECC picked automatically
 - [Local models](docs/LOCAL_MODELS.md) - Hugging Face GGUFs, llama.cpp, reasoning levels
 - [Framework options](docs/FRAMEWORK_OPTIONS.md) - five directions for what Cortex becomes
-- [Palace, Studio and Swarm plan](docs/PALACE_AND_STUDIO_PLAN.md) - layered memory, a Claude Code mod, subagents (design only)
+- [Memory palace](docs/PALACE.md) - layered project memory with Graphify, set up in one command
+- [Project map and floating button](docs/ATLAS.md) - click a button, see your project's files and notes
+- [Graphify, the palace and the 1M window](docs/CONTEXT.md) - how they share one context window, and what keeps answers grounded
+- [Palace, Studio and Swarm plan](docs/PALACE_AND_STUDIO_PLAN.md) - the larger plan (palace built; Studio and Swarm are design only)
 - [Handover](HANDOVER.md) - installing it yourself, with verification steps
 - [Ghidra audit](tools/ghidra/AUDIT.md) - supply-chain findings and residual risk
 - [Test harness](tests/sandbox/README.md) - scenarios, fuzzing, mutation testing

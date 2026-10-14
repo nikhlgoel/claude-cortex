@@ -71,7 +71,7 @@ def scripts_dir():
     return REPO / "scripts"
 
 
-def run_child(args, timeout, env=None):
+def run_child(args, timeout, env=None, cwd=None):
     """Run a child process with a real time bound and UTF-8 decoding.
 
     Two Windows problems this avoids, both reproduced: (1) subprocess's timeout
@@ -87,7 +87,7 @@ def run_child(args, timeout, env=None):
     from cortex import proc
     child_env = dict(os.environ, PYTHONUTF8="1")
     child_env.update(env or {})
-    return proc.run(args, timeout=timeout, env=child_env)
+    return proc.run(args, timeout=timeout, env=child_env, cwd=cwd)
 
 
 def child_failed(exc, what):
@@ -117,38 +117,66 @@ def tool_account_status(_args):
     return result.stdout or result.stderr or "no output"
 
 
+def _palace(args_list, project_dir, what):
+    """Run ``cc palace ...`` through the core, inside the project the session is in."""
+    core = cortex_module_dir()
+    cwd = project_dir if project_dir and os.path.isdir(project_dir) else None
+    try:
+        return run_child([sys.executable, "-m", "cortex", "palace"] + args_list, timeout=60,
+                         env={"PYTHONPATH": core}, cwd=cwd)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return child_failed(exc, what)
+
+
 def tool_recall(args):
     query = (args.get("query") or "").strip()
     if not query:
         return "Provide a 'query' to search the memory palace."
-    script = scripts_dir() / "claude-palace.py"
-    if not script.is_file():
-        return "Memory palace is not installed."
-    try:
-        result = run_child([sys.executable, str(script), "recall", query], timeout=60)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return child_failed(exc, "Memory recall")
+    argv = ["recall", query, "--no-record"]
+    for f in args.get("files") or []:
+        argv += ["--file", str(f)]
+    if args.get("budget"):
+        argv += ["--budget", str(int(args["budget"]))]
+    if args.get("include_history"):
+        argv.append("--history")
+    result = _palace(argv, args.get("project_dir"), "Memory recall")
+    if isinstance(result, str):
+        return result
     return result.stdout or result.stderr or f"No memories matching '{query}'."
 
 
 def tool_remember(args):
-    room = (args.get("room") or "working").strip()
     title = (args.get("title") or "").strip()
     content = (args.get("content") or "").strip()
     if not title or not content:
         return "Provide 'title' and 'content' to store a memory."
-    script = scripts_dir() / "claude-palace.py"
-    if not script.is_file():
-        return "Memory palace is not installed."
-    try:
-        result = run_child([sys.executable, str(script), "remember", "--room", room,
-                            "--title", title, "--content", content], timeout=60)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return child_failed(exc, "Memory store")
+    argv = ["remember", "--title", title, "--content", content, "--trust", "agent"]
+    if args.get("kind"):
+        argv += ["--kind", str(args["kind"])]
+    elif args.get("room"):
+        argv += ["--room", str(args["room"])]
+    if args.get("files"):
+        argv += ["--file"] + [str(f) for f in args["files"]]
+    if args.get("supersedes"):
+        argv += ["--supersedes"] + [str(i) for i in args["supersedes"]]
+    result = _palace(argv, args.get("project_dir"), "Memory store")
+    if isinstance(result, str):
+        return result
     if result.returncode != 0:
         # Do not tell the model "stored" when the palace refused or crashed.
         return "NOT stored: " + (result.stderr or result.stdout or "the palace reported an error").strip()
     return result.stdout or "stored"
+
+
+def tool_verify_refs(args):
+    text = (args.get("text") or "").strip()
+    if not text:
+        return "Provide the 'text' whose file paths and `backticked` names should be checked."
+    # "--" so text that starts with a dash is not read as an option; capped so the command line stays sane.
+    result = _palace(["verify", "--", text[:8000]], args.get("project_dir"), "Reference check")
+    if isinstance(result, str):
+        return result
+    return (result.stdout or result.stderr or "no output").strip()
 
 
 def tool_analyze_code_risks(args):
@@ -249,29 +277,65 @@ TOOLS = {
         "handler": tool_account_status,
     },
     "recall_memory": {
-        "description": "Search the project memory palace for past lessons, "
-                       "decisions, and solved bugs.",
+        "description": "Search the project's layered memory (decisions, facts, past failures, "
+                       "recipes). Returns a few relevant notes, or nothing when nothing is "
+                       "relevant. Notes marked 'code changed' may be out of date - verify them.",
         "inputSchema": {
             "type": "object",
-            "properties": {"query": {"type": "string",
-                                     "description": "what to search for"}},
+            "properties": {
+                "query": {"type": "string", "description": "what to look up, in your own words"},
+                "files": {"type": "array", "items": {"type": "string"},
+                          "description": "files you are working on (boosts memories about them)"},
+                "budget": {"type": "integer", "description": "max tokens to return (default 800)"},
+                "include_history": {"type": "boolean",
+                                    "description": "also show superseded (older) versions"},
+                "project_dir": {"type": "string",
+                                "description": "the project folder (your working directory)"},
+            },
             "required": ["query"],
         },
         "handler": tool_recall,
     },
     "remember": {
-        "description": "Store a lesson, decision, or fix in the memory palace.",
+        "description": "Store a decision, fact, failure, fix or recipe in the project memory. "
+                       "A later memory with the same title replaces the earlier one (history is "
+                       "kept). Never include secrets; they are scrubbed, but do not rely on it.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "room": {"type": "string",
-                         "description": "blueprint|procedures|graveyard|decisions|working"},
                 "title": {"type": "string"},
-                "content": {"type": "string"},
+                "content": {"type": "string", "description": "what happened and why"},
+                "kind": {"type": "string",
+                         "description": "decision|fact|structure|failure|fix|recipe|rule|preference|task|note"},
+                "room": {"type": "string",
+                         "description": "old-style alternative to kind: blueprint|procedures|graveyard|decisions|working"},
+                "files": {"type": "array", "items": {"type": "string"},
+                          "description": "files this is about (also detected from the text)"},
+                "supersedes": {"type": "array", "items": {"type": "string"},
+                               "description": "ids of memories this replaces"},
+                "project_dir": {"type": "string",
+                                "description": "the project folder (your working directory)"},
             },
             "required": ["title", "content"],
         },
         "handler": tool_remember,
+    },
+    "verify_refs": {
+        "description": "Check file paths and `backticked` function/class names in a piece of text against the "
+                       "real project and its code graph. Use it before telling the user a file or function "
+                       "exists, when a name came from memory or a guess. Reports each as ok, NOT FOUND (with "
+                       "the closest real names), or not checkable - library code is never called wrong.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string",
+                         "description": "the claim or plan to check, with names in backticks"},
+                "project_dir": {"type": "string",
+                                "description": "the project folder (your working directory)"},
+            },
+            "required": ["text"],
+        },
+        "handler": tool_verify_refs,
     },
     "analyze_code_risks": {
         "description": "Static risk analysis of source code. Reports findings "

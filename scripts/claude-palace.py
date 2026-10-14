@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 """
+LEGACY (v2.5) - superseded by the layered palace in ``cortex/palace`` (see docs/PALACE.md).
+
+``cc palace``, ``cc remember``, ``cc recall``, the MCP tools and the prompt hook no longer use
+this script. It stays for two reasons only: it is the format ``cc palace migrate`` imports (the
+importer reads the old files itself and never runs this), and its tests document the old behaviour
+that the new engine is measured against. It will be removed in a later release.
+
 Claude Cortex - Cognitive Memory Palace Engine v2.5
 Neuroscience-inspired cognitive architecture with inverted label indexing,
 autonomous recall, room filtering, cooperative file-locking concurrency,
